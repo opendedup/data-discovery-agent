@@ -45,3 +45,36 @@ htmlcov/
 # Environment variables
 .env
 .env.local
+
+# Terraform
+terraform/.terraform/
+terraform/.terraform.lock.hcl
+terraform/*.tfstate
+terraform/*.tfstate.backup
+terraform/terraform.tfvars
+terraform/tfplan
+terraform/vertex-ai-search/.terraform/
+terraform/vertex-ai-search/.terraform.lock.hcl
+terraform/vertex-ai-search/*.tfstate
+terraform/vertex-ai-search/*.tfstate.backup
+terraform/vertex-ai-search/terraform.tfvars
+terraform/genai-toolbox/.terraform/
+terraform/genai-toolbox/.terraform.lock.hcl
+terraform/genai-toolbox/*.tfstate
+terraform/genai-toolbox/*.tfstate.backup
+terraform/genai-toolbox/terraform.tfvars
+
+# Sensitive summaries with real deployment info
+PHASE*_SUMMARY.md
+PHASE*_FINAL_SUMMARY.md
+DEPLOYMENT_STATUS.md
+
+# Scripts with sensitive data
+scripts/create-datastore.py
+
+# GCP credentials
+*.json
+!terraform/variables.tf
+key.json
+credentials.json
+service-account.json

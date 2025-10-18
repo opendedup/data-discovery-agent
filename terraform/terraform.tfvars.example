@@ -1,0 +1,31 @@
+# Example Terraform Variables
+# Copy this file to terraform.tfvars and customize for your environment
+
+# GCP Project Configuration
+project_id = "YOUR_PROJECT_ID"
+region     = "us-central1"
+
+# Network Configuration (existing Shared VPC)
+# Replace with your VPC network and subnet paths
+# Or use "default" for default VPC
+network    = "projects/YOUR_HOST_PROJECT_ID/global/networks/YOUR_NETWORK_NAME"
+subnetwork = "projects/YOUR_HOST_PROJECT_ID/regions/us-central1/subnetworks/YOUR_SUBNET_NAME"
+
+# For default VPC, use:
+# network    = "default"
+# subnetwork = "default"
+
+# GKE Cluster Configuration
+cluster_name       = "data-discovery-cluster"
+machine_type       = "e2-standard-2"
+initial_node_count = 2
+min_node_count     = 1
+max_node_count     = 5
+
+# Storage Configuration
+jsonl_bucket_name   = "YOUR_PROJECT_ID-data-discovery-jsonl"
+reports_bucket_name = "YOUR_PROJECT_ID-data-discovery-reports"
+
+# Environment
+environment = "dev"
+

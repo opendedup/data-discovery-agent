@@ -5,7 +5,8 @@
 
 Build a dual-mode discovery system that combines high-speed cached queries with real-time status checks:
 
-**Path 1: Cached Discovery (Vertex AI Search)** - Serves 90% of queries instantly from pre-indexed metadata  
+**Path 1: Cached Discovery (Vertex AI Search)** - Serves 90% of queries instantly from pre-indexed metadata
+
 **Path 2: Live Discovery (Real-time Agents)** - Provides up-to-the-second data for volatile information
 
 Discovery agents run as **background indexers** on a schedule, feeding enriched metadata into Vertex AI Search. A **Smart Query Router** determines whether to use cached data, live queries, or both. This architecture is extensible to support future data sources (GCS, Cloud SQL, etc.).
@@ -13,6 +14,7 @@ Discovery agents run as **background indexers** on a schedule, feeding enriched 
 ## Phase 0: Infrastructure Setup (Terraform)
 
 **0.1 GKE Cluster Provisioning**
+
 - Create `terraform/` directory:
   - `main.tf`: Main Terraform configuration
   - `variables.tf`: Input variables (project_id, region, cluster_name, etc.)
@@ -27,13 +29,13 @@ Discovery agents run as **background indexers** on a schedule, feeding enriched 
   - Node pools with appropriate machine types
 
 **0.2 GenAI Toolbox Deployment**
+
 - Create `terraform/genai-toolbox/`:
   - `genai-toolbox.tf`: GenAI Toolbox deployment on GKE
   - `kubernetes-manifests.tf`: K8s resources (Deployment, Service, ConfigMap, Secret)
   - Configure GenAI Toolbox tools:
     - BigQuery tools (`bigquery-get-table-info`, `bigquery-execute-sql`)
     - Dataplex tools (lineage, data quality)
-    - Looker tools (dashboard dependencies)
     - Cloud SQL, AlloyDB tools (for future extensibility)
 - Service exposure:
   - Internal LoadBalancer or ClusterIP + Ingress
@@ -41,6 +43,7 @@ Discovery agents run as **background indexers** on a schedule, feeding enriched 
   - Health check endpoints
 
 **0.3 Supporting Infrastructure**
+
 - Create `terraform/infrastructure/`:
   - `vertex-ai-search.tf`: Vertex AI Search data store
   - `gcs-buckets.tf`: GCS buckets for JSONL ingestion and Markdown reports
@@ -54,6 +57,7 @@ Discovery agents run as **background indexers** on a schedule, feeding enriched 
   - `vpc.tf`: VPC and networking (if using private cluster)
 
 **0.4 Security Configuration**
+
 - Workload Identity binding (GKE → GCP service accounts)
 - IAM role assignments per SR-2 requirements:
   - BigQuery metadataViewer and jobUser
@@ -64,14 +68,16 @@ Discovery agents run as **background indexers** on a schedule, feeding enriched 
 - Secret rotation configuration
 
 **0.5 GenAI Toolbox Configuration**
+
 - Create `config/genai-toolbox/`:
   - `toolbox-config.yaml`: GenAI Toolbox configuration
-  - Data source connections (BigQuery, Dataplex, Looker)
+  - Data source connections (BigQuery, Dataplex)
   - Tool enablement and security settings
   - Connection pooling and timeout settings
   - Read-only mode enforcement (SR-2A validation)
 
 **0.6 Deployment Scripts**
+
 - Create `scripts/`:
   - `setup-infrastructure.sh`: Terraform init, plan, apply wrapper
   - `deploy-genai-toolbox.sh`: Deploy GenAI Toolbox to GKE
@@ -81,6 +87,7 @@ Discovery agents run as **background indexers** on a schedule, feeding enriched 
 ## Phase 1: Core Infrastructure & Application Foundation
 
 **1.1 Abstract Base Layer**
+
 - Create `src/data_discovery_agent/core/` directory:
   - `data_source.py`: Abstract base class `DataSource` for all data sources
   - `metadata.py`: Base Pydantic models (schema, security, lineage, quality, cost, governance)
@@ -90,6 +97,7 @@ Discovery agents run as **background indexers** on a schedule, feeding enriched 
 - Enables future addition of GCS, Cloud SQL, Spanner
 
 **1.2 GCP Client Integration**
+
 - Add GCP libraries to `pyproject.toml`: 
   - `google-cloud-bigquery`, `google-cloud-datacatalog`, `google-cloud-dlp`
   - `google-cloud-logging`, `google-cloud-monitoring`, `google-cloud-storage`
@@ -104,11 +112,11 @@ Discovery agents run as **background indexers** on a schedule, feeding enriched 
   - `genai_toolbox_client.py`: GenAI Toolbox integration wrapper
 
 **1.2a GenAI Toolbox Integration Strategy**
+
 - **Hybrid Approach**: Use GenAI Toolbox where appropriate, custom tools for specialized discovery
 - **GenAI Toolbox Usage**:
   - Live agents: `bigquery-get-table-info`, `bigquery-execute-sql` (for real-time queries)
   - Dataplex integration: Pre-built Dataplex tools for lineage and quality
-  - Looker integration: Pre-built Looker tools for dashboard dependencies
   - Future data sources: Cloud SQL, AlloyDB, Spanner tools
 - **Custom Tools for**:
   - Specialized metadata discovery (IAM policies, DLP findings, cost analysis)
@@ -117,6 +125,7 @@ Discovery agents run as **background indexers** on a schedule, feeding enriched 
 - **Security Validation**: Audit all GenAI Toolbox tools to ensure read-only compliance
 
 **1.3 Vertex AI Search Infrastructure**
+
 - Create `src/data_discovery_agent/search/`:
   - `search_datastore.py`: Manages Vertex AI Search data store lifecycle
   - `jsonl_schema.py`: Defines JSONL schema for asset indexing (structData + content)
@@ -126,6 +135,7 @@ Discovery agents run as **background indexers** on a schedule, feeding enriched 
   - `result_parser.py`: Parses and presents search results with citations
 
 **1.4 JSONL Schema Design**
+
 ```python
 # Example schema for BigQuery assets
 {
@@ -153,6 +163,7 @@ Discovery agents run as **background indexers** on a schedule, feeding enriched 
 ```
 
 **1.5 Data Models**
+
 - Create `src/data_discovery_agent/models/`:
   - `base_models.py`: Common metadata models (abstract)
   - `bigquery_models.py`: BigQuery-specific models
@@ -160,6 +171,7 @@ Discovery agents run as **background indexers** on a schedule, feeding enriched 
   - Future: `gcs_models.py`, `cloudsql_models.py`
 
 **1.6 Configuration Management**
+
 - Create `config/` directory with YAML configuration:
   - `discovery_config.yaml`: Schedule, agent settings, data sources
   - `search_config.yaml`: Vertex AI Search data store settings
@@ -174,46 +186,54 @@ All agents become **background indexers** that run on schedule and output format
 Create agents under `src/data_discovery_agent/agents/bigquery/indexers/`:
 
 **2.1 Schema Indexer Agent** (`schema_indexer/`)
+
 - Discovers: schemas, columns, types, partitioning, clustering, views, materialized views, UDFs
 - Tools: `get_table_schema` (via INFORMATION_SCHEMA), `get_view_definition`, `list_routines`
 - Output: Structured schema data → Metadata Formatter → JSONL
 - Uses `INFORMATION_SCHEMA` views for efficiency
 
 **2.2 Data Quality Indexer Agent** (`data_quality_indexer/`)
+
 - Discovers: row counts, null percentages, distributions, freshness, completeness
 - Tools: `get_table_stats`, `analyze_column_distribution` (aggregated only)
 - Output: Quality metrics → Metadata Formatter → JSONL
 - Integrates with Dataplex Data Quality when available
 
 **2.3 Security Indexer Agent** (`security_indexer/`)
+
 - Discovers: IAM policies (stable parts), RLS policies, CLS policy tags, encryption, authorized views
 - Tools: `get_iam_policy`, `list_row_access_policies`, `get_policy_tags`
 - Output: Security metadata → Metadata Formatter → JSONL
 - Note: Real-time permission checks use live agents
 
 **2.4 Lineage Indexer Agent** (`lineage_indexer/`)
+
 - Discovers: table dependencies, view lineage, job lineage
 - Tools: `get_dataplex_lineage` (primary), `query_audit_logs_for_lineage` (fallback)
 - Output: Lineage graph data → Metadata Formatter → JSONL
 - Uses Dataplex Data Lineage API as primary source (24hr delay acceptable for cache)
 
 **2.5 Cost Indexer Agent** (`cost_indexer/`)
+
 - Discovers: storage costs, historical query costs, expensive tables, slot usage patterns
 - Tools: `get_storage_cost`, `analyze_query_costs`, `get_slot_usage`
 - Output: Cost analysis → Metadata Formatter → JSONL
 
 **2.6 Governance Indexer Agent** (`governance_indexer/`)
+
 - Discovers: labels, tags, retention policies, expirations, DLP findings, compliance status
 - Tools: `get_labels`, `get_retention_policies`, `get_dlp_findings`
 - Output: Governance metadata → Metadata Formatter → JSONL
 
 **2.7 Glossary Indexer Agent** (`glossary_indexer/`)
+
 - Discovers: table/column descriptions, Data Catalog entries
 - Uses LLM: Generate missing documentation, suggest business terms
 - Tools: `get_table_description`, `get_datacatalog_entries`, `generate_glossary_terms`
 - Output: Enriched descriptions → Metadata Formatter → JSONL
 
 **2.8 Indexer Orchestrator & Data Aggregator**
+
 - Create `src/data_discovery_agent/indexer/`:
   - `orchestrator.py`: Runs all indexer agents sequentially or in parallel
   - `data_aggregator.py`: Collects and consolidates outputs from all agents
@@ -225,6 +245,7 @@ Create agents under `src/data_discovery_agent/agents/bigquery/indexers/`:
   - Both outputs generated from same discovery run (efficiency)
 
 **2.9 Background Report Generation**
+
 - Create `src/data_discovery_agent/reports/background/`:
   - `markdown_generator.py`: Generates comprehensive Markdown reports from aggregated data
   - `report_templates.py`: Templates for different report types (schema summary, security audit, cost analysis, etc.)
@@ -232,6 +253,7 @@ Create agents under `src/data_discovery_agent/agents/bigquery/indexers/`:
   - Output: Rich Markdown documentation stored in GCS for stakeholder access
 
 **2.9 Scheduling**
+
 - Create `src/data_discovery_agent/scheduler/`:
   - `discovery_scheduler.py`: Cloud Scheduler integration or cron
   - `incremental_tracker.py`: Track what changed since last run (via audit logs)
@@ -240,17 +262,20 @@ Create agents under `src/data_discovery_agent/agents/bigquery/indexers/`:
 ## Phase 3: Live Query Agents & Smart Router
 
 **3.1 Live Agent Framework**
+
 - Create `src/data_discovery_agent/agents/bigquery/live/`:
   - `base_live_agent.py`: Lightweight base class for real-time queries
   - Each live agent has 2-5 focused tools (not comprehensive)
 
 **3.2 Live Agent Implementations**
+
 - `live_security_agent.py`: Real-time IAM checks (`test_iam_permissions`, `get_current_policy`)
 - `live_schema_agent.py`: Current row counts, latest modification times
 - `live_cost_agent.py`: Active query jobs, current slot usage
 - `live_quality_agent.py`: Real-time freshness checks, streaming buffer status
 
 **3.3 Smart Query Router (Orchestrator)**
+
 - Create `src/data_discovery_agent/agents/coordinator/smart_router.py`:
   - **Main user-facing entry point**
   - Accepts: natural language query, data source type, optional filters
@@ -265,6 +290,7 @@ Create agents under `src/data_discovery_agent/agents/bigquery/indexers/`:
   - **Response Synthesis**: LLM combines results into coherent answer with citations
 
 **3.4 Router Decision Logic**
+
 ```python
 # Heuristics for routing decisions
 CACHED_KEYWORDS = ["find", "list", "describe", "what tables", "history", "lineage", "cost over time"]
@@ -280,6 +306,7 @@ HYBRID_KEYWORDS = ["check current", "verify and show", "latest status of"]
 ## Phase 4: Output & Reporting
 
 **4.1 Report Generators** (`src/data_discovery_agent/reports/`)
+
 - `base_reporter.py`: Abstract reporter interface
 - `markdown_reporter.py`: Generate markdown reports from search results or live data
 - `json_reporter.py`: Structured JSON output
@@ -287,6 +314,7 @@ HYBRID_KEYWORDS = ["check current", "verify and show", "latest status of"]
 - `datacatalog_writer.py`: Write enriched metadata back to Data Catalog (with approval)
 
 **4.2 Export & Metadata Write-Back**
+
 - Export to: local files, GCS, Data Catalog
 - **Metadata writes only** (SR-2A: no source data writes)
 - Approval workflow for metadata updates:
@@ -296,6 +324,7 @@ HYBRID_KEYWORDS = ["check current", "verify and show", "latest status of"]
   - Audit all writes
 
 **4.3 Templates**
+
 - Create `src/data_discovery_agent/reports/templates/`:
   - JSONL templates for different asset types
   - Report templates for various use cases
@@ -304,6 +333,7 @@ HYBRID_KEYWORDS = ["check current", "verify and show", "latest status of"]
 ## Phase 5: Testing & Examples
 
 **5.1 Integration Tests** (`tests/integration/`)
+
 - Test Vertex AI Search data store creation and querying
 - Test background indexer agents against mocked BigQuery
 - Test live agents with real-time queries
@@ -312,6 +342,7 @@ HYBRID_KEYWORDS = ["check current", "verify and show", "latest status of"]
 - End-to-end tests (indexing → search → response)
 
 **5.2 Unit Tests** (`tests/unit/`)
+
 - Mock GCP clients for unit tests
 - Test core abstractions and registry
 - Test query routing logic
@@ -319,6 +350,7 @@ HYBRID_KEYWORDS = ["check current", "verify and show", "latest status of"]
 - Test approval workflows
 
 **5.3 Example Scripts**
+
 - Update `example_usage.py`:
   - Example 1: Run background indexing job
   - Example 2: Query cached metadata (Vertex AI Search)
@@ -334,6 +366,7 @@ HYBRID_KEYWORDS = ["check current", "verify and show", "latest status of"]
 ## Phase 6: Proactive Monitoring & Anomaly Detection
 
 **6.1 Metrics Collection & Storage**
+
 - Create `src/data_discovery_agent/storage/`:
   - `timeseries_store.py`: Store historical metrics in BigQuery or Cloud Monitoring
   - `baseline_manager.py`: Establish and update baselines
@@ -341,16 +374,19 @@ HYBRID_KEYWORDS = ["check current", "verify and show", "latest status of"]
 - Integrated with background indexers
 
 **6.2 Anomaly Detection Indexer** (`agents/bigquery/indexers/anomaly_indexer/`)
+
 - **Background Process**: Runs with other indexers, compares current state to baselines
 - Detects: data quality drift, cost anomalies, security anomalies
 - Tools: `establish_baseline`, `detect_statistical_drift`, `analyze_access_deviations`
 - Output: Anomaly findings → Indexed in Vertex AI Search + real-time alerts
 
 **6.3 Live Anomaly Agent**
+
 - For real-time anomaly verification when alerts triggered
 - Checks current state to confirm anomaly
 
 **6.4 Alerting**
+
 - Create `src/data_discovery_agent/scheduler/alert_manager.py`:
   - Send alerts via email, Slack, PubSub
   - Integration with Cloud Monitoring
@@ -359,6 +395,7 @@ HYBRID_KEYWORDS = ["check current", "verify and show", "latest status of"]
 ## Phase 7: Automated Remediation & Action Engine
 
 **7.1 Action Framework**
+
 - Create `src/data_discovery_agent/actions/`:
   - `action_base.py`: Abstract base class for actions
   - `action_executor.py`: Execute with approval workflows
@@ -366,6 +403,7 @@ HYBRID_KEYWORDS = ["check current", "verify and show", "latest status of"]
   - `risk_assessor.py`: Assess risk levels
 
 **7.2 Metadata Remediation Actions**
+
 - Create `src/data_discovery_agent/actions/remediations/`:
   - `governance_actions.py`: Apply labels, update descriptions (Data Catalog only)
   - `security_actions.py`: **Suggest** IAM policy changes (no automatic writes)
@@ -373,22 +411,27 @@ HYBRID_KEYWORDS = ["check current", "verify and show", "latest status of"]
   - `quality_actions.py`: Suggest data quality rules
 
 **7.3 Critical Constraint (SR-2A)**
+
 - **NO SOURCE DATA WRITES**: Actions can only:
+
   1. Write to Data Catalog (descriptions, tags, business metadata)
   2. Apply resource labels/tags
   3. Generate recommendations (DDL, policy changes) for manual review
+
 - **NEVER**: Execute DDL, modify schemas, change IAM policies automatically
 - All actions require: preview, detailed explanation, explicit approval
 
 ## Phase 8: Enhanced FinOps & Cost Intelligence
 
 **8.1 Advanced Cost Attribution** (indexed)
+
 - Enhance Cost Indexer with:
   - `cost_attribution.py`: Attribute costs to teams via labels
   - `chargeback_reporter.py`: Generate chargeback reports
   - `budget_tracker.py`: Track against budgets
 
 **8.2 Cost Simulation & What-If Analysis** (live)
+
 - Create `src/data_discovery_agent/simulation/`:
   - `partition_simulator.py`: Estimate partition cost savings
   - `clustering_simulator.py`: Simulate clustering impact
@@ -397,6 +440,7 @@ HYBRID_KEYWORDS = ["check current", "verify and show", "latest status of"]
 - Live agent performs simulations on-demand based on cached cost data
 
 **8.3 Integration with Router**
+
 - Queries like "What's the cost impact of partitioning table X?" → HYBRID:
   - Get historical cost data from Vertex AI Search
   - Run simulation via live agent
@@ -405,6 +449,7 @@ HYBRID_KEYWORDS = ["check current", "verify and show", "latest status of"]
 ## Phase 9: Cross-Platform Lineage & Impact Analysis
 
 **9.1 Extended Lineage Collection** (indexed)
+
 - Dataplex Data Lineage API as primary source (background indexer)
 - Audit log parsing as fallback
 - Create `src/data_discovery_agent/lineage/`:
@@ -413,14 +458,15 @@ HYBRID_KEYWORDS = ["check current", "verify and show", "latest status of"]
   - `lineage_graph.py`: Build graph (NetworkX)
 
 **9.2 External Tool Integration** (indexed)
+
 - Create `src/data_discovery_agent/integrations/`:
   - `dataflow_integration.py`: Dataflow job lineage
   - `composer_integration.py`: Airflow/Composer DAG lineage
-  - `looker_integration.py`: Downstream dashboard dependencies
   - `openlineage_adapter.py`: OpenLineage standard support
-- Future: dbt, Tableau, Power BI
+- Future: dbt, Tableau, Power BI (Looker integration disabled)
 
 **9.3 Impact Analysis** (hybrid)
+
 - Queries like "What breaks if I change column X?" → HYBRID:
   - Get lineage graph from Vertex AI Search
   - Verify current dependencies via live agent
@@ -429,11 +475,13 @@ HYBRID_KEYWORDS = ["check current", "verify and show", "latest status of"]
 ## Phase 10: Native GCP Feature Integration
 
 **10.1 Dataplex Integration**
+
 - Use Dataplex Data Lineage (primary lineage source)
 - Integrate Dataplex Data Quality (automated checks)
 - Leverage Dataplex Data Profiling (enhanced statistics)
 
 **10.2 Authentication & Security**
+
 - Use Application Default Credentials (ADC) in `base_client.py`
 - Implement least-privilege service accounts:
   - Read-only account for discovery/indexing
@@ -441,6 +489,7 @@ HYBRID_KEYWORDS = ["check current", "verify and show", "latest status of"]
 - Document required IAM roles
 
 **10.3 INFORMATION_SCHEMA Optimization**
+
 - Use `INFORMATION_SCHEMA` views in Schema Indexer
 - `INFORMATION_SCHEMA.TABLE_OPTIONS` for partition/cluster info
 - `INFORMATION_SCHEMA.COLUMN_FIELD_PATHS` for nested schemas
@@ -448,22 +497,26 @@ HYBRID_KEYWORDS = ["check current", "verify and show", "latest status of"]
 ## Phase 11: Future Extensibility & Additional Data Sources
 
 **11.1 GCS Bucket Discovery**
+
 - Implement `GCSDataSource` extending `DataSource`
 - Create GCS indexer agents and live agents
 - Add GCS JSONL schema for Vertex AI Search
 - Semantic search over GCS objects
 
 **11.2 Cloud SQL Discovery**
+
 - Implement `CloudSQLDataSource` extending `DataSource`
 - Similar pattern: indexers, live agents, JSONL schema
 
 **11.3 Multi-Source Search**
+
 - Single Vertex AI Search data store can index multiple source types
 - Use `structData.data_source` filter for source-specific queries
 
 ## Phase 12: Optional Web UI
 
 **12.1 Streamlit Dashboard** (`ui/`)
+
 - Discovery job launcher and status
 - Natural language query interface (calls Smart Router)
 - Interactive reports and visualizations
@@ -474,6 +527,7 @@ HYBRID_KEYWORDS = ["check current", "verify and show", "latest status of"]
 ## Key Files to Create/Modify
 
 **New Core Files:**
+
 - `src/data_discovery_agent/core/data_source.py`
 - `src/data_discovery_agent/core/metadata.py`
 - `src/data_discovery_agent/core/registry.py`
@@ -481,6 +535,7 @@ HYBRID_KEYWORDS = ["check current", "verify and show", "latest status of"]
 - `src/data_discovery_agent/core/query_mode.py`
 
 **New Vertex AI Search Files:**
+
 - `src/data_discovery_agent/search/search_datastore.py`
 - `src/data_discovery_agent/search/jsonl_schema.py`
 - `src/data_discovery_agent/search/metadata_formatter.py` ⭐ **Critical**
@@ -488,6 +543,7 @@ HYBRID_KEYWORDS = ["check current", "verify and show", "latest status of"]
 - `src/data_discovery_agent/search/result_parser.py`
 
 **New Client Files:**
+
 - `src/data_discovery_agent/clients/base_client.py`
 - `src/data_discovery_agent/clients/bigquery_client.py`
 - `src/data_discovery_agent/clients/datacatalog_client.py`
@@ -495,6 +551,7 @@ HYBRID_KEYWORDS = ["check current", "verify and show", "latest status of"]
 - `src/data_discovery_agent/clients/vertex_search_client.py`
 
 **New Indexer Agent Files:**
+
 - `src/data_discovery_agent/agents/bigquery/indexers/schema_indexer/agent.py`
 - `src/data_discovery_agent/agents/bigquery/indexers/data_quality_indexer/agent.py`
 - `src/data_discovery_agent/agents/bigquery/indexers/security_indexer/agent.py`
@@ -505,21 +562,25 @@ HYBRID_KEYWORDS = ["check current", "verify and show", "latest status of"]
 - `src/data_discovery_agent/indexer/orchestrator.py`
 
 **New Live Agent Files:**
+
 - `src/data_discovery_agent/agents/bigquery/live/base_live_agent.py`
 - `src/data_discovery_agent/agents/bigquery/live/live_security_agent.py`
 - `src/data_discovery_agent/agents/bigquery/live/live_schema_agent.py`
 - `src/data_discovery_agent/agents/bigquery/live/live_cost_agent.py`
 
 **New Smart Router:**
+
 - `src/data_discovery_agent/agents/coordinator/smart_router.py` ⭐ **Main entry point**
 
 **Modified Files:**
+
 - `pyproject.toml`: Add GCP dependencies including `google-cloud-aiplatform`
 - `env_template.txt`: Add GCP configuration, Vertex AI Search settings
 - `example_usage.py`: Update with dual-mode architecture examples
 - `README.md`: Update with architecture, dual-mode explanation, usage
 
 **Configuration Files:**
+
 - `config/discovery_config.yaml`
 - `config/search_config.yaml`
 - `config/alerts_config.yaml`
@@ -530,6 +591,7 @@ HYBRID_KEYWORDS = ["check current", "verify and show", "latest status of"]
 [All security requirements from SR-1 through SR-11 remain the same]
 
 **SR-2A: Source Data Write Protection (CRITICAL)** - emphasized throughout implementation:
+
 - Indexer agents: read-only
 - Live agents: read-only
 - Action engine: metadata writes only (Data Catalog, labels)
@@ -538,34 +600,40 @@ HYBRID_KEYWORDS = ["check current", "verify and show", "latest status of"]
 ## Implementation Strategy
 
 1. **Phase 1**: Build Vertex AI Search foundation and core infrastructure
+
    - **Security Focus**: SR-1, SR-2, SR-2A, SR-5 (ADC, IAM, no data writes, secrets)
    - Set up Vertex AI Search data store
    - Implement Metadata Formatter (critical for JSONL generation)
    - Establish abstract base layer
 
 2. **Phase 2**: Implement background indexer agents
+
    - **Security Focus**: SR-3, SR-4 (data handling, audit logging)
    - Start with Schema Indexer as template
    - Each agent outputs to Metadata Formatter → JSONL → GCS → Vertex AI Search
    - Set up scheduling (Cloud Scheduler)
 
 3. **Phase 3**: Build Smart Query Router and live agents
+
    - **Security Focus**: SR-7, SR-8 (input validation, access control)
    - Implement query classification logic
    - Create lightweight live agents for real-time queries
    - Test dual-mode routing
 
 4. **Phase 4**: Add reporting and metadata write-back
+
    - **Security Focus**: SR-2A enforcement (metadata writes only)
    - Approval workflows for any writes
    - Data Catalog integration
 
 5. **Phase 5**: Testing and examples
+
    - **Security Focus**: SR-11 (security testing)
    - End-to-end tests of dual-mode architecture
    - Performance benchmarks
 
 6. **Phases 6-12**: Advanced features
+
    - **Security Focus**: SR-9, SR-10, SR-11 (anomaly detection, deployment, monitoring)
    - Each phase builds on dual-mode foundation
    - Anomaly detection integrates with both paths
@@ -574,25 +642,27 @@ HYBRID_KEYWORDS = ["check current", "verify and show", "latest status of"]
 ## Dual-Mode Query Flow Examples
 
 **Example 1: "Find all tables with PII data in finance dataset"**
+
 1. Smart Router classifies: CACHED
 2. Vertex AI Search: `search(query="tables with PII", filter="dataset_id='finance'")`
 3. Returns results in milliseconds with citations
 4. Router synthesizes response
 
 **Example 2: "Can user john@company.com access transactions_2024 right now?"**
+
 1. Smart Router classifies: LIVE
 2. Instantiate LiveSecurityAgent
 3. Call `test_iam_permissions('transactions_2024', 'john@company.com')`
 4. Return real-time yes/no with current policy
 
 **Example 3: "Show me the most expensive tables and check their current query jobs"**
+
 1. Smart Router classifies: HYBRID
 2. Step 1 (CACHED): Query Vertex AI Search for cost analysis
 3. Step 2 (LIVE): For top expensive tables, call LiveCostAgent to check active jobs
 4. Router synthesizes combined report
 
 This architecture provides the best of both worlds: speed of cached search and accuracy of real-time checks.
-
 
 ### To-dos
 

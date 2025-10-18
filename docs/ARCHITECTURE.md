@@ -101,7 +101,6 @@ These are lightweight, specialized agents designed for targeted, on-demand tasks
         *   `bigquery-get-table-info`: Quick table metadata retrieval
         *   `bigquery-execute-sql`: Real-time analytical queries
         *   Dataplex tools: Live lineage and quality checks
-        *   Looker tools: Dashboard dependency verification
     *   **Custom Tools:** For specialized operations:
         *   Real-time IAM permission checks (`test_iam_permissions`)
         *   Security-sensitive metadata queries
@@ -208,7 +207,8 @@ The Smart Router automatically handles multi-source queries, filtering by `struc
 *   AlloyDB (similar to Cloud SQL with specialized features)
 *   Spanner (global distribution, schema evolution)
 *   Cloud Storage (object metadata, lifecycle, access patterns)
-*   Looker (dashboard dependencies, usage analytics) - via GenAI Toolbox
 *   dbt (transformation lineage) - via custom integration
+
+> **Note**: Looker integration disabled for initial deployment. Can be added later via GenAI Toolbox.
 
 Each follows the same pattern: indexers → aggregator → dual output → unified search + specialized live agents.
