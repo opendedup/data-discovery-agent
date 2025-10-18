@@ -1,4 +1,4 @@
-<!-- 217d0748-0518-499c-9621-66ec0e6823c4 37c919e8-88a2-48eb-a111-9650e54c6abb -->
+<!-- 217d0748-0518-499c-9621-66ec0e6823c4 8c57e32c-8f3e-4e61-9de4-7f514cc93fcc -->
 # BigQuery Data Estate Discovery System (Dual-Mode Architecture)
 
 ## Architecture Overview
@@ -10,7 +10,75 @@ Build a dual-mode discovery system that combines high-speed cached queries with 
 
 Discovery agents run as **background indexers** on a schedule, feeding enriched metadata into Vertex AI Search. A **Smart Query Router** determines whether to use cached data, live queries, or both. This architecture is extensible to support future data sources (GCS, Cloud SQL, etc.).
 
-## Phase 1: Core Infrastructure & Vertex AI Search Foundation
+## Phase 0: Infrastructure Setup (Terraform)
+
+**0.1 GKE Cluster Provisioning**
+- Create `terraform/` directory:
+  - `main.tf`: Main Terraform configuration
+  - `variables.tf`: Input variables (project_id, region, cluster_name, etc.)
+  - `outputs.tf`: Output values (cluster endpoint, service URLs)
+  - `versions.tf`: Terraform and provider versions
+  - `terraform.tfvars.example`: Example configuration
+- GKE cluster configuration:
+  - Autopilot or Standard mode (recommend Autopilot for simplicity)
+  - Workload Identity enabled
+  - VPC-native cluster
+  - Private cluster option for security
+  - Node pools with appropriate machine types
+
+**0.2 GenAI Toolbox Deployment**
+- Create `terraform/genai-toolbox/`:
+  - `genai-toolbox.tf`: GenAI Toolbox deployment on GKE
+  - `kubernetes-manifests.tf`: K8s resources (Deployment, Service, ConfigMap, Secret)
+  - Configure GenAI Toolbox tools:
+    - BigQuery tools (`bigquery-get-table-info`, `bigquery-execute-sql`)
+    - Dataplex tools (lineage, data quality)
+    - Looker tools (dashboard dependencies)
+    - Cloud SQL, AlloyDB tools (for future extensibility)
+- Service exposure:
+  - Internal LoadBalancer or ClusterIP + Ingress
+  - MCP protocol endpoint configuration
+  - Health check endpoints
+
+**0.3 Supporting Infrastructure**
+- Create `terraform/infrastructure/`:
+  - `vertex-ai-search.tf`: Vertex AI Search data store
+  - `gcs-buckets.tf`: GCS buckets for JSONL ingestion and Markdown reports
+  - `service-accounts.tf`: Service accounts with least-privilege IAM roles:
+    - Discovery service account (read-only)
+    - Metadata write service account (Data Catalog only)
+    - GenAI Toolbox service account
+  - `secrets.tf`: Secret Manager for sensitive config
+  - `cloud-scheduler.tf`: Cloud Scheduler jobs for background indexing
+  - `monitoring.tf`: Cloud Monitoring dashboards and alerts
+  - `vpc.tf`: VPC and networking (if using private cluster)
+
+**0.4 Security Configuration**
+- Workload Identity binding (GKE → GCP service accounts)
+- IAM role assignments per SR-2 requirements:
+  - BigQuery metadataViewer and jobUser
+  - Data Catalog viewer and entryGroupOwner
+  - Cloud Logging viewer
+  - DLP reader
+- Network policies for GKE cluster
+- Secret rotation configuration
+
+**0.5 GenAI Toolbox Configuration**
+- Create `config/genai-toolbox/`:
+  - `toolbox-config.yaml`: GenAI Toolbox configuration
+  - Data source connections (BigQuery, Dataplex, Looker)
+  - Tool enablement and security settings
+  - Connection pooling and timeout settings
+  - Read-only mode enforcement (SR-2A validation)
+
+**0.6 Deployment Scripts**
+- Create `scripts/`:
+  - `setup-infrastructure.sh`: Terraform init, plan, apply wrapper
+  - `deploy-genai-toolbox.sh`: Deploy GenAI Toolbox to GKE
+  - `validate-setup.sh`: Health checks and validation
+  - `teardown.sh`: Clean infrastructure destruction
+
+## Phase 1: Core Infrastructure & Application Foundation
 
 **1.1 Abstract Base Layer**
 - Create `src/data_discovery_agent/core/` directory:
