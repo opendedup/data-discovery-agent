@@ -140,6 +140,19 @@ resource "google_storage_bucket_iam_member" "reports_bucket_readers" {
   member = "projectViewer:${var.project_id}"
 }
 
+# Composer service account access to buckets
+resource "google_storage_bucket_iam_member" "jsonl_bucket_composer" {
+  bucket = google_storage_bucket.jsonl_bucket.name
+  role   = "roles/storage.objectAdmin"
+  member = "serviceAccount:${google_service_account.composer_sa.email}"
+}
+
+resource "google_storage_bucket_iam_member" "reports_bucket_composer" {
+  bucket = google_storage_bucket.reports_bucket.name
+  role   = "roles/storage.objectAdmin"
+  member = "serviceAccount:${google_service_account.composer_sa.email}"
+}
+
 # Data source for project information
 data "google_project" "project" {
   project_id = var.project_id

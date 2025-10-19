@@ -92,6 +92,12 @@ class StructData(BaseModel):
     # Tags (for filtering)
     tags: list[str] = Field(default_factory=list, description="Asset tags")
     
+    # Detailed metadata for rich reporting (not for filtering)
+    schema_info: Optional[Dict[str, Any]] = Field(None, description="Detailed schema information")
+    quality_stats: Optional[Dict[str, Any]] = Field(None, description="Data quality statistics")
+    column_profiles: Optional[Dict[str, Any]] = Field(None, description="Column-level data profiles")
+    lineage: Optional[Dict[str, Any]] = Field(None, description="Data lineage information")
+    
     @field_validator('indexed_at', 'created_timestamp', 'last_modified_timestamp', 'last_accessed_timestamp')
     @classmethod
     def validate_iso8601(cls, v: Optional[str]) -> Optional[str]:

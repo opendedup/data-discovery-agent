@@ -84,6 +84,8 @@ class MetadataFormatter:
             table_id=table_id,
             asset_type=asset_type,
             table_metadata=table_metadata,
+            schema_info=schema_info,
+            lineage_info=lineage_info,
             cost_info=cost_info,
             quality_info=quality_info,
             security_info=security_info,
@@ -126,6 +128,8 @@ class MetadataFormatter:
         table_id: str,
         asset_type: AssetType,
         table_metadata: Dict[str, Any],
+        schema_info: Optional[Dict[str, Any]],
+        lineage_info: Optional[Dict[str, Any]],
         cost_info: Optional[Dict[str, Any]],
         quality_info: Optional[Dict[str, Any]],
         security_info: Optional[Dict[str, Any]],
@@ -201,6 +205,10 @@ class MetadataFormatter:
             completeness_score=completeness_score,
             freshness_score=freshness_score,
             tags=tags,
+            schema_info=schema_info or table_metadata.get("schema"),
+            quality_stats=quality_info,
+            column_profiles=quality_info.get("column_profiles") if quality_info else None,
+            lineage=lineage_info,
         )
     
     def _build_content_text(

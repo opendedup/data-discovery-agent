@@ -17,6 +17,7 @@ resource "google_project_service" "required_apis" {
     "aiplatform.googleapis.com",          # Vertex AI
     "compute.googleapis.com",             # Compute (for networking)
     "dataplex.googleapis.com",            # Dataplex (for lineage and data quality)
+    "composer.googleapis.com",            # Cloud Composer
   ])
 
   project = var.project_id

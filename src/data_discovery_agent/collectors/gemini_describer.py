@@ -3,12 +3,21 @@ Gemini Description Generator
 
 Uses Gemini 2.5 Flash to automatically generate table descriptions
 when they're missing from BigQuery metadata.
+
+Environment Variables:
+    GEMINI_API_KEY: API key for Google Gemini API (loaded from .env file)
+                    Get your key from: https://aistudio.google.com/app/apikey
+
+Example .env file:
+    GEMINI_API_KEY=your-api-key-here
 """
 
 import logging
 from typing import Dict, Any, Optional, List
 import google.generativeai as genai
 import os
+import time
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -21,16 +30,30 @@ class GeminiDescriber:
     to create meaningful, context-aware descriptions.
     """
     
-    def __init__(self, api_key: Optional[str] = None, model_name: str = "gemini-2.0-flash-exp"):
+    def __init__(
+        self, 
+        api_key: Optional[str] = None, 
+        model_name: str = "gemini-2.5-flash",
+        max_retries: int = 5,
+        initial_retry_delay: float = 1.0,
+    ):
         """
         Initialize the Gemini describer.
         
         Args:
-            api_key: Gemini API key (or uses GEMINI_API_KEY env var)
-            model_name: Gemini model to use (default: gemini-2.0-flash-exp)
+            api_key: Gemini API key (or uses GEMINI_API_KEY env var from .env file)
+            model_name: Gemini model to use (default: gemini-2.5-flash)
+            max_retries: Maximum number of retry attempts for rate limit errors (default: 5)
+            initial_retry_delay: Initial delay in seconds for exponential backoff (default: 1.0)
+            
+        Note:
+            Ensure .env file is loaded (via load_dotenv()) before initializing this class
+            if you want to use GEMINI_API_KEY from .env file.
         """
         self.api_key = api_key or os.getenv("GEMINI_API_KEY")
         self.model_name = model_name
+        self.max_retries = max_retries
+        self.initial_retry_delay = initial_retry_delay
         
         if not self.api_key:
             logger.warning("No Gemini API key provided. Description generation will be disabled.")
@@ -45,6 +68,69 @@ class GeminiDescriber:
         except Exception as e:
             logger.error(f"Failed to initialize Gemini: {e}")
             self.enabled = False
+    
+    def _call_with_retry(self, prompt: str, context: str) -> Optional[Any]:
+        """
+        Call Gemini API with retry logic for rate limit errors.
+        
+        Args:
+            prompt: The prompt to send to Gemini
+            context: Context string for logging (e.g., table name)
+            
+        Returns:
+            API response or None if all retries fail
+        """
+        last_exception = None
+        
+        for attempt in range(self.max_retries + 1):
+            try:
+                response = self.model.generate_content(prompt)
+                return response
+                
+            except Exception as e:
+                last_exception = e
+                error_str = str(e)
+                
+                # Check if this is a rate limit error (429)
+                is_rate_limit = "429" in error_str or "quota" in error_str.lower()
+                
+                if not is_rate_limit:
+                    # Not a rate limit error, don't retry
+                    logger.error(f"Non-retryable error for {context}: {e}")
+                    return None
+                
+                if attempt >= self.max_retries:
+                    # Max retries reached
+                    logger.error(f"Max retries ({self.max_retries}) reached for {context}: {e}")
+                    return None
+                
+                # Calculate delay with exponential backoff
+                delay = self.initial_retry_delay * (2 ** attempt)
+                
+                # Try to parse suggested retry delay from error message
+                # Error format: "Please retry in 611.469707ms"
+                retry_match = re.search(r'retry in ([\d.]+)(ms|s)', error_str)
+                if retry_match:
+                    suggested_delay = float(retry_match.group(1))
+                    unit = retry_match.group(2)
+                    if unit == 'ms':
+                        suggested_delay /= 1000  # Convert to seconds
+                    
+                    # Use the suggested delay if it's reasonable, otherwise use exponential backoff
+                    if 0.1 <= suggested_delay <= 60:
+                        delay = suggested_delay
+                        logger.info(f"Using API suggested retry delay: {delay:.2f}s")
+                
+                logger.warning(
+                    f"Rate limit hit for {context} (attempt {attempt + 1}/{self.max_retries + 1}). "
+                    f"Retrying in {delay:.2f}s..."
+                )
+                time.sleep(delay)
+        
+        # Should not reach here, but just in case
+        if last_exception:
+            logger.error(f"Failed after all retries for {context}: {last_exception}")
+        return None
     
     def generate_table_description(
         self,
@@ -84,8 +170,8 @@ class GeminiDescriber:
                 size_bytes=size_bytes,
             )
             
-            # Generate description
-            response = self.model.generate_content(prompt)
+            # Generate description with retry logic
+            response = self._call_with_retry(prompt, table_name)
             
             if response and response.text:
                 description = response.text.strip()
@@ -230,30 +316,55 @@ class GeminiDescriber:
                 num_insights=num_insights,
             )
             
-            # Generate insights
-            response = self.model.generate_content(prompt)
+            # Generate insights with retry logic
+            response = self._call_with_retry(prompt, f"{table_name} (insights)")
             
             if response and response.text:
                 # Parse the response into a list of insights
                 insights_text = response.text.strip()
                 
-                # Split by numbered lines (1., 2., etc.) or newlines
-                import re
+                # Split by numbered lines (1., 2., etc.)
                 insights = []
                 
-                # Try to find numbered items first
-                numbered_pattern = r'^\d+\.\s*(.+)$'
+                # Pattern to match numbered lines: "1. Question text"
+                # Allow for optional markdown formatting
+                numbered_pattern = r'^(\d+)\.\s*(.+?)$'
+                
                 for line in insights_text.split('\n'):
-                    line = line.strip()
-                    if not line:
+                    # Skip empty lines
+                    if not line.strip():
                         continue
                     
-                    match = re.match(numbered_pattern, line)
+                    # Skip lines that are clearly sub-bullets or formatting
+                    # (lines starting with spaces, dashes, asterisks, or indentation)
+                    if line.startswith(('  ', '   ', '\t', '- ', '* ', '  -', '  *')):
+                        continue
+                    
+                    # Skip lines that are headers or intro text
+                    stripped = line.strip()
+                    if stripped.startswith(('**', '###', 'Here are', 'Analytical Questions', 'Questions:')):
+                        continue
+                    
+                    # Try to match numbered pattern
+                    match = re.match(numbered_pattern, stripped)
                     if match:
-                        insights.append(match.group(1).strip())
-                    elif line and not line.startswith('#') and not line.startswith('**'):
-                        # Non-numbered line that's not a header
-                        insights.append(line)
+                        question_number = int(match.group(1))
+                        question_text = match.group(2).strip()
+                        
+                        # Clean up the question text
+                        # Remove markdown bold formatting
+                        question_text = re.sub(r'\*\*(.+?)\*\*', r'\1', question_text)
+                        
+                        # Skip if this looks like an intro line
+                        if any(skip_word in question_text.lower() for skip_word in [
+                            'here are', 'following are', 'questions:', 'insights:',
+                            'analytical questions', 'actionable questions'
+                        ]):
+                            continue
+                        
+                        # Only include if it's a reasonable length (between 10 and 500 chars)
+                        if 10 <= len(question_text) <= 500:
+                            insights.append(question_text)
                 
                 if insights:
                     logger.info(f"Generated {len(insights)} insights for {table_name}")
@@ -335,22 +446,31 @@ class GeminiDescriber:
         # Instructions
         parts.append(f"**Generate {num_insights} analytical questions/insights:**")
         parts.append("")
+        parts.append("IMPORTANT FORMAT RULES:")
+        parts.append(f"- Generate EXACTLY {num_insights} questions as a simple numbered list")
+        parts.append("- Each question should be ONE concise sentence on a SINGLE line")
+        parts.append("- DO NOT add sub-bullets, explanations, or additional formatting")
+        parts.append("- DO NOT include introductory text or headers")
+        parts.append("- Just list the questions directly")
+        parts.append("")
         parts.append("Each question should:")
-        parts.append("1. Be specific and actionable")
-        parts.append("2. Reference specific columns from the schema")
-        parts.append("3. Suggest a meaningful analysis (trends, correlations, comparisons, aggregations)")
-        parts.append("4. Be answerable using SQL queries on this table")
-        parts.append("5. Provide business value or interesting insights")
+        parts.append("- Be specific and actionable")
+        parts.append("- Reference specific columns from the schema")
+        parts.append("- Suggest a meaningful analysis (trends, correlations, comparisons, aggregations)")
+        parts.append("- Be answerable using SQL queries on this table")
         parts.append("")
-        parts.append("Examples of good questions:")
-        parts.append("- Analyze the trend of penalties and penalty yards over the weeks of the season for each team")
-        parts.append("- Calculate the average number of turnovers for home and away teams based on prior losses")
-        parts.append("- Find the teams with the highest average score differential")
-        parts.append("- Determine the percentage of drives that resulted in a touchdown for each quarter")
+        parts.append("GOOD examples:")
+        parts.append("1. What is the trend of penalties and penalty yards over the weeks of the season for each team?")
+        parts.append("2. What is the average number of turnovers for home vs away teams grouped by prior losses?")
+        parts.append("3. Which teams have the highest average score differential?")
+        parts.append("4. What percentage of drives resulted in a touchdown in each quarter?")
         parts.append("")
-        parts.append("Format your response as a numbered list (1., 2., 3., etc.)")
+        parts.append("BAD examples (too detailed or with sub-bullets):")
+        parts.append("1. **Question:** What is the correlation...")
+        parts.append("   - **Columns:** x, y, z")
+        parts.append("   - **Analysis:** Calculate...")
         parts.append("")
-        parts.append("**Analytical Questions:**")
+        parts.append(f"Now generate EXACTLY {num_insights} simple, concise questions as a numbered list:")
         
         return "\n".join(parts)
 

@@ -52,7 +52,7 @@ Discovery agents run as **background indexers** on a schedule, feeding enriched 
     - Metadata write service account (Data Catalog only)
     - GenAI Toolbox service account
   - `secrets.tf`: Secret Manager for sensitive config
-  - `cloud-scheduler.tf`: Cloud Scheduler jobs for background indexing
+  - `composer.tf`: Cloud Composer environment for Airflow-based orchestration
   - `monitoring.tf`: Cloud Monitoring dashboards and alerts
   - `vpc.tf`: VPC and networking (if using private cluster)
 
@@ -254,10 +254,13 @@ Create agents under `src/data_discovery_agent/agents/bigquery/indexers/`:
 
 **2.9 Scheduling**
 
-- Create `src/data_discovery_agent/scheduler/`:
-  - `discovery_scheduler.py`: Cloud Scheduler integration or cron
-  - `incremental_tracker.py`: Track what changed since last run (via audit logs)
-  - Schedule: Full scan nightly, incremental updates hourly
+- Create `dags/` directory for Airflow DAGs.
+- Create `dags/metadata_collection_dag.py`:
+  - Define an Airflow DAG to orchestrate the discovery and indexing process.
+  - Use the `PythonOperator` to execute each step of the collection process.
+  - The DAG will manage dependencies between tasks (e.g., collection must finish before formatting and exporting).
+- The schedule will be defined in the DAG (e.g., `schedule_interval="@daily"`).
+- Remove `src/data_discovery_agent/scheduler/` in favor of Airflow's built-in scheduling.
 
 ## Phase 3: Live Query Agents & Smart Router
 

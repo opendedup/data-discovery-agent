@@ -70,3 +70,51 @@ variable "environment" {
   default     = "dev"
 }
 
+variable "composer_env_name" {
+  description = "Name of the Cloud Composer environment"
+  type        = string
+  default     = "data-discovery-agent-composer"
+}
+
+variable "composer_region" {
+  description = "Region for the Cloud Composer environment"
+  type        = string
+  default     = "us-central1"
+}
+
+variable "composer_image_version" {
+  description = "Composer image version"
+  type        = string
+  default     = "composer-3-airflow-2.10.5"
+}
+
+# Data Discovery Agent Configuration Variables
+variable "vertex_datastore_id" {
+  description = "Vertex AI Search datastore ID for document indexing"
+  type        = string
+}
+
+variable "vertex_location" {
+  description = "Vertex AI location (e.g., global, us-central1)"
+  type        = string
+  default     = "global"
+}
+
+variable "bq_dataset" {
+  description = "BigQuery dataset for discovered metadata export"
+  type        = string
+  default     = "data_discovery"
+}
+
+variable "bq_table" {
+  description = "BigQuery table for discovered metadata export"
+  type        = string
+  default     = "discovered_assets"
+}
+
+variable "bq_location" {
+  description = "BigQuery dataset location"
+  type        = string
+  default     = "US"
+}
+

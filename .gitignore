@@ -43,8 +43,10 @@ htmlcov/
 .tox/
 
 # Environment variables
-.env
-.env.local
+# Ignore all .env files...
+*.env
+# ...but not the example file
+!.env.example
 
 # Terraform
 terraform/.terraform/

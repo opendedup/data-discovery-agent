@@ -29,3 +29,10 @@ reports_bucket_name = "YOUR_PROJECT_ID-data-discovery-reports"
 # Environment
 environment = "dev"
 
+# Data Discovery Agent Configuration
+vertex_datastore_id = "YOUR_VERTEX_DATASTORE_ID"  # Required: Update with your Vertex AI Search datastore ID
+vertex_location     = "global"
+bq_dataset          = "data_discovery"
+bq_table            = "discovered_assets"
+bq_location         = "US"
+

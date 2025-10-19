@@ -8,6 +8,8 @@ This is the foundation of Phase 2 - populating Vertex AI Search with discoverabl
 import logging
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from threading import Lock
 
 from google.cloud import bigquery
 from google.cloud.exceptions import GoogleCloudError
@@ -46,6 +48,7 @@ class BigQueryCollector:
         dataplex_location: str = "us-central1",
         use_gemini_descriptions: bool = True,
         gemini_api_key: Optional[str] = None,
+        max_workers: int = 5,
     ):
         """
         Initialize BigQuery collector.
@@ -58,11 +61,14 @@ class BigQueryCollector:
             dataplex_location: Dataplex location for profile scans (default: us-central1)
             use_gemini_descriptions: Use Gemini to generate descriptions for tables without them
             gemini_api_key: Gemini API key (or uses GEMINI_API_KEY env var)
+            max_workers: Maximum number of concurrent threads for collection (default: 5)
         """
         self.project_id = project_id
         self.target_projects = target_projects or [project_id]
         self.exclude_datasets = exclude_datasets or ['_staging', 'temp_', 'tmp_']
         self.use_dataplex_profiling = use_dataplex_profiling
+        self.max_workers = max_workers
+        self.stats_lock = Lock()  # Thread-safe stats updates
         
         # Initialize clients
         self.client = bigquery.Client(project=project_id)
@@ -148,7 +154,8 @@ class BigQueryCollector:
                 logger.info(f"Scanning project: {project}")
                 assets = self._scan_project(project, include_views=include_views)
                 all_assets.extend(assets)
-                self.stats['projects_scanned'] += 1
+                with self.stats_lock:
+                    self.stats['projects_scanned'] += 1
                 
                 # Check limit
                 if max_tables and len(all_assets) >= max_tables:
@@ -158,7 +165,8 @@ class BigQueryCollector:
                     
             except GoogleCloudError as e:
                 logger.error(f"Error scanning project {project}: {e}")
-                self.stats['errors'] += 1
+                with self.stats_lock:
+                    self.stats['errors'] += 1
                 continue
         
         logger.info(f"Collection complete: {len(all_assets)} assets collected")
@@ -195,16 +203,19 @@ class BigQueryCollector:
                         include_views=include_views
                     )
                     assets.extend(dataset_assets)
-                    self.stats['datasets_scanned'] += 1
+                    with self.stats_lock:
+                        self.stats['datasets_scanned'] += 1
                     
                 except GoogleCloudError as e:
                     logger.error(f"Error scanning dataset {dataset_id}: {e}")
-                    self.stats['errors'] += 1
+                    with self.stats_lock:
+                        self.stats['errors'] += 1
                     continue
         
         except GoogleCloudError as e:
             logger.error(f"Error listing datasets in {project_id}: {e}")
-            self.stats['errors'] += 1
+            with self.stats_lock:
+                self.stats['errors'] += 1
         
         return assets
     
@@ -214,7 +225,7 @@ class BigQueryCollector:
         dataset_id: str,
         include_views: bool = True,
     ) -> List[BigQueryAssetSchema]:
-        """Scan all tables in a dataset"""
+        """Scan all tables in a dataset using multi-threading"""
         
         assets = []
         
@@ -224,41 +235,60 @@ class BigQueryCollector:
             
             logger.info(f"Found {len(tables)} tables in {dataset_ref}")
             
+            # Filter tables
+            tables_to_process = []
             for table_ref in tables:
-                table_id = table_ref.table_id
-                
                 # Skip views if not included
                 if not include_views and table_ref.table_type == "VIEW":
                     continue
-                
-                try:
-                    asset = self._collect_table_metadata(
+                tables_to_process.append(table_ref)
+            
+            logger.info(f"Processing {len(tables_to_process)} tables with {self.max_workers} workers")
+            
+            # Process tables in parallel using ThreadPoolExecutor
+            with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+                # Submit all tasks
+                future_to_table = {
+                    executor.submit(
+                        self._collect_table_metadata,
                         project_id,
                         dataset_id,
-                        table_id
-                    )
-                    
-                    if asset:
-                        assets.append(asset)
-                        self.stats['tables_formatted'] += 1
-                    
-                    self.stats['tables_scanned'] += 1
-                    
-                    # Log progress every 10 tables
-                    if self.stats['tables_scanned'] % 10 == 0:
-                        logger.info(
-                            f"Progress: {self.stats['tables_scanned']} tables scanned, "
-                            f"{self.stats['tables_formatted']} formatted"
-                        )
+                        table_ref.table_id
+                    ): table_ref.table_id
+                    for table_ref in tables_to_process
+                }
                 
-                except Exception as e:
-                    logger.error(f"Error collecting {project_id}.{dataset_id}.{table_id}: {e}")
-                    self.stats['errors'] += 1
-                    continue
+                # Collect results as they complete
+                for future in as_completed(future_to_table):
+                    table_id = future_to_table[future]
+                    try:
+                        asset = future.result()
+                        
+                        if asset:
+                            assets.append(asset)
+                            with self.stats_lock:
+                                self.stats['tables_formatted'] += 1
+                        
+                        with self.stats_lock:
+                            self.stats['tables_scanned'] += 1
+                            
+                            # Log progress every 10 tables
+                            if self.stats['tables_scanned'] % 10 == 0:
+                                logger.info(
+                                    f"Progress: {self.stats['tables_scanned']} tables scanned, "
+                                    f"{self.stats['tables_formatted']} formatted"
+                                )
+                    
+                    except Exception as e:
+                        logger.error(f"Error collecting {project_id}.{dataset_id}.{table_id}: {e}")
+                        with self.stats_lock:
+                            self.stats['errors'] += 1
+                        continue
         
         except GoogleCloudError as e:
             logger.error(f"Error listing tables in {dataset_ref}: {e}")
-            self.stats['errors'] += 1
+            with self.stats_lock:
+                self.stats['errors'] += 1
         
         return assets
     
@@ -363,7 +393,8 @@ class BigQueryCollector:
                     
                     if generated_desc:
                         table_metadata["description"] = generated_desc
-                        self.stats['descriptions_generated'] += 1
+                        with self.stats_lock:
+                            self.stats['descriptions_generated'] += 1
                         logger.info(f"✓ Generated description for {table_id}")
                     else:
                         logger.warning(f"Failed to generate description for {table_id}")

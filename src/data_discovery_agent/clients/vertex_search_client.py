@@ -601,6 +601,40 @@ class VertexSearchClient:
         logger.info(f"Import operation started: {operation.operation.name}")
         
         return operation.operation.name
+
+    def import_documents_from_bigquery(
+        self,
+        dataset_id: str,
+        table_id: str,
+        reconciliation_mode: str = "INCREMENTAL",
+    ) -> str:
+        """
+        Import documents from a BigQuery table.
+
+        Args:
+            dataset_id: The BigQuery dataset ID.
+            table_id: The BigQuery table ID.
+            reconciliation_mode: FULL or INCREMENTAL.
+
+        Returns:
+            Operation name for tracking.
+        """
+        logger.info(f"Starting document import from BigQuery table: {self.project_id}.{dataset_id}.{table_id}")
+
+        request = discoveryengine.ImportDocumentsRequest(
+            parent=self.branch_path,
+            bigquery_source=discoveryengine.BigQuerySource(
+                project_id=self.project_id,
+                dataset_id=dataset_id,
+                table_id=table_id,
+                data_schema="custom",
+            ),
+            reconciliation_mode=reconciliation_mode,
+        )
+
+        operation = self.document_client.import_documents(request=request)
+        logger.info(f"Import operation started: {operation.operation.name}")
+        return operation.operation.name
     
     def wait_for_import(
         self,

@@ -161,6 +161,97 @@ resource "google_service_account_iam_member" "metadata_workload_identity" {
   ]
 }
 
+# Service Account for Cloud Composer
+resource "google_service_account" "composer_sa" {
+  account_id   = "data-discovery-composer"
+  display_name = "Data Discovery Composer Service Account"
+  description  = "Service account for Cloud Composer environment"
+  project      = var.project_id
+}
+
+# Composer required permissions
+resource "google_project_iam_member" "composer_worker" {
+  project = var.project_id
+  role    = "roles/composer.worker"
+  member  = "serviceAccount:${google_service_account.composer_sa.email}"
+}
+
+resource "google_project_iam_member" "composer_sa_log_writer" {
+  project = var.project_id
+  role    = "roles/logging.logWriter"
+  member  = "serviceAccount:${google_service_account.composer_sa.email}"
+}
+
+resource "google_project_iam_member" "composer_sa_metric_writer" {
+  project = var.project_id
+  role    = "roles/monitoring.metricWriter"
+  member  = "serviceAccount:${google_service_account.composer_sa.email}"
+}
+
+# BigQuery permissions for Composer DAGs
+# - Read metadata from all datasets (for discovery)
+# - Read table data for SQL-based profiling (min/max/distinct values)
+# - Write to data_discovery dataset (for storing discovered metadata)
+resource "google_project_iam_member" "composer_bq_metadata_viewer" {
+  project = var.project_id
+  role    = "roles/bigquery.metadataViewer"
+  member  = "serviceAccount:${google_service_account.composer_sa.email}"
+}
+
+resource "google_project_iam_member" "composer_bq_data_viewer" {
+  project = var.project_id
+  role    = "roles/bigquery.dataViewer"
+  member  = "serviceAccount:${google_service_account.composer_sa.email}"
+}
+
+resource "google_project_iam_member" "composer_bq_data_editor" {
+  project = var.project_id
+  role    = "roles/bigquery.dataEditor"
+  member  = "serviceAccount:${google_service_account.composer_sa.email}"
+}
+
+resource "google_project_iam_member" "composer_bq_job_user" {
+  project = var.project_id
+  role    = "roles/bigquery.jobUser"
+  member  = "serviceAccount:${google_service_account.composer_sa.email}"
+}
+
+# Data Catalog read permissions (for lineage and metadata discovery)
+resource "google_project_iam_member" "composer_datacatalog_viewer" {
+  project = var.project_id
+  role    = "roles/datacatalog.viewer"
+  member  = "serviceAccount:${google_service_account.composer_sa.email}"
+}
+
+# Vertex AI permissions for importing to Vertex AI Search
+resource "google_project_iam_member" "composer_aiplatform_user" {
+  project = var.project_id
+  role    = "roles/aiplatform.user"
+  member  = "serviceAccount:${google_service_account.composer_sa.email}"
+}
+
+# DLP permissions (for PII detection if used)
+resource "google_project_iam_member" "composer_dlp_reader" {
+  project = var.project_id
+  role    = "roles/dlp.reader"
+  member  = "serviceAccount:${google_service_account.composer_sa.email}"
+}
+
+# Dataplex permissions for creating and running data profile scans
+resource "google_project_iam_member" "composer_dataplex_viewer" {
+  project = var.project_id
+  role    = "roles/dataplex.viewer"
+  member  = "serviceAccount:${google_service_account.composer_sa.email}"
+}
+
+resource "google_project_iam_member" "composer_dataplex_dataScanAdmin" {
+  project = var.project_id
+  role    = "roles/dataplex.dataScanAdmin"
+  member  = "serviceAccount:${google_service_account.composer_sa.email}"
+}
+
+# Note: Storage permissions are bucket-specific, defined in storage.tf
+
 # Output service account emails for reference
 output "service_account_setup_notes" {
   value = <<-EOT
