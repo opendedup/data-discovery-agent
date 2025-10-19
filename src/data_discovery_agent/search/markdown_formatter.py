@@ -72,6 +72,11 @@ class MarkdownFormatter:
             sections.append("*No description available for this table.*")
         sections.append("")
         
+        # Analytical Insights
+        if extended_metadata and extended_metadata.get("quality_stats") and extended_metadata["quality_stats"].get("insights"):
+            sections.append(self._generate_insights_section(extended_metadata["quality_stats"]["insights"]))
+            sections.append("")
+        
         # Schema
         sections.append(self._generate_schema_section(asset, extended_metadata))
         sections.append("")
@@ -454,6 +459,20 @@ class MarkdownFormatter:
         avg_query_time = usage.get("avg_query_time_seconds")
         if avg_query_time:
             lines.append(f"**Avg Query Time**: {avg_query_time:.2f}s")
+        
+        return "\n".join(lines)
+    
+    def _generate_insights_section(self, insights: List[str]) -> str:
+        """Generate analytical insights section"""
+        
+        lines = []
+        lines.append("## Analytical Insights")
+        lines.append("")
+        lines.append("This table can be used to answer questions such as:")
+        lines.append("")
+        
+        for i, insight in enumerate(insights, 1):
+            lines.append(f"{i}. {insight}")
         
         return "\n".join(lines)
     

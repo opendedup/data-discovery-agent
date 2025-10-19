@@ -370,6 +370,32 @@ class BigQueryCollector:
                 except Exception as e:
                     logger.error(f"Error generating description for {table_id}: {e}")
             
+            # Generate analytical insights with Gemini
+            insights = None
+            if self.gemini_describer:
+                try:
+                    logger.info(f"Generating insights for {table_id} using Gemini...")
+                    insights = self.gemini_describer.generate_table_insights(
+                        table_name=table_ref,
+                        description=table_metadata.get("description", ""),
+                        schema=schema_info.get("fields", []) if schema_info else [],
+                        sample_values=sample_values,
+                        column_profiles=column_profiles,
+                        row_count=table.num_rows,
+                        num_insights=5,
+                    )
+                    
+                    if insights:
+                        logger.info(f"✓ Generated {len(insights)} insights for {table_id}")
+                        # Add insights to quality_info for inclusion in JSONL/Markdown
+                        if not quality_info:
+                            quality_info = {}
+                        quality_info["insights"] = insights
+                    else:
+                        logger.warning(f"Failed to generate insights for {table_id}")
+                except Exception as e:
+                    logger.error(f"Error generating insights for {table_id}: {e}")
+            
             # Build lineage_info
             lineage_info = None
             if lineage:

@@ -342,11 +342,34 @@ def main():
                         # Get data lineage
                         lineage = collector._get_lineage(project_id, dataset_id, table_id)
                         
-                        # Merge sample values into quality_stats
-                        if quality_stats and sample_values:
+                        # Generate analytical insights with Gemini (for Markdown)
+                        insights = None
+                        if collector.gemini_describer:
+                            try:
+                                logger.info(f"Generating insights for Markdown: {table_id}")
+                                insights = collector.gemini_describer.generate_table_insights(
+                                    table_name=table_ref,
+                                    description=table.description or "",
+                                    schema=schema_fields,
+                                    sample_values=sample_values,
+                                    column_profiles=column_profiles,
+                                    row_count=table.num_rows,
+                                    num_insights=5,
+                                )
+                                if insights:
+                                    logger.info(f"✓ Generated {len(insights)} insights for Markdown: {table_id}")
+                            except Exception as e:
+                                logger.error(f"Error generating insights for Markdown {table_id}: {e}")
+                        
+                        # Merge sample values and insights into quality_stats
+                        if not quality_stats:
+                            quality_stats = {}
+                        
+                        if sample_values:
                             quality_stats["sample_values"] = sample_values
-                        elif sample_values:
-                            quality_stats = {"sample_values": sample_values}
+                        
+                        if insights:
+                            quality_stats["insights"] = insights
                         
                         extended_metadata = {
                             "schema": {"fields": schema_fields},

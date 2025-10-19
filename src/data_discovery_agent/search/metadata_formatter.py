@@ -408,6 +408,15 @@ class MetadataFormatter:
             if total_cost := cost_info.get("total_monthly_cost_usd"):
                 sections.append(f"- **Total**: ${total_cost:.2f}/month")
         
+        # Analytical Insights
+        if quality_info and quality_info.get("insights"):
+            sections.append("")
+            sections.append("## Analytical Insights")
+            sections.append("")
+            sections.append("Questions that could be answered using this table:")
+            for i, insight in enumerate(quality_info["insights"], 1):
+                sections.append(f"{i}. {insight}")
+        
         return "\n".join(sections)
     
     def _determine_volatility(
