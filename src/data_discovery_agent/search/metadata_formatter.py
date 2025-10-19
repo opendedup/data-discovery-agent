@@ -218,6 +218,12 @@ class MetadataFormatter:
         
         This is the key to good semantic search results.
         Include all context that would help answer natural language queries.
+        
+        Enhanced to include:
+        - Full schema (all columns, not truncated)
+        - Data quality metrics (null statistics)
+        - Column profiles (min/max/avg/distinct)
+        - Complete lineage information
         """
         
         sections = []
@@ -230,19 +236,37 @@ class MetadataFormatter:
         sections.append(f"**Dataset**: {table_metadata['dataset_id']}")
         sections.append(f"**Project**: {table_metadata.get('project_id', self.project_id)}")
         
+        # Statistics (moved up for better search context)
+        sections.append("")
+        sections.append("## Statistics")
+        if num_rows := table_metadata.get("num_rows"):
+            sections.append(f"- **Rows**: {num_rows:,}")
+        if num_bytes := table_metadata.get("num_bytes"):
+            size_gb = num_bytes / (1024**3)
+            sections.append(f"- **Size**: {size_gb:.2f} GB")
+        if table_metadata.get("column_count"):
+            sections.append(f"- **Columns**: {table_metadata['column_count']}")
+        if modified := table_metadata.get("modified_time"):
+            sections.append(f"- **Last Modified**: {modified}")
+        
         # Description
         if description := table_metadata.get("description"):
             sections.append("")
             sections.append("## Description")
             sections.append(description)
         
-        # Schema
+        # Schema - INCLUDE ALL COLUMNS (not truncated) with sample values
         if schema_info or table_metadata.get("schema"):
             sections.append("")
             sections.append("## Schema")
             schema = schema_info or table_metadata.get("schema", {})
             fields = schema.get("fields", [])
-            for field in fields[:20]:  # Limit to first 20 columns
+            
+            # Get sample values if available
+            sample_values = quality_info.get("sample_values", {}) if quality_info else {}
+            
+            # Include ALL fields for complete searchability
+            for field in fields:
                 field_name = field.get("name", "unknown")
                 field_type = field.get("type", "unknown")
                 field_desc = field.get("description", "")
@@ -251,27 +275,77 @@ class MetadataFormatter:
                 line = f"- **{field_name}** ({field_type}, {mode})"
                 if field_desc:
                     line += f": {field_desc}"
+                
+                # Add sample values if available
+                if field_name in sample_values and sample_values[field_name]:
+                    samples = sample_values[field_name]
+                    samples_str = ", ".join([f"'{s}'" for s in samples])
+                    line += f" — Examples: {samples_str}"
+                
                 sections.append(line)
-            
-            if len(fields) > 20:
-                sections.append(f"... and {len(fields) - 20} more columns")
         
-        # Usage and lineage
-        if lineage_info:
-            sections.append("")
-            sections.append("## Lineage")
-            
-            if upstream := lineage_info.get("upstream_tables"):
-                sections.append(f"**Sources**: {', '.join(upstream[:10])}")
-            
-            if downstream := lineage_info.get("downstream_tables"):
-                sections.append(f"**Used by**: {', '.join(downstream[:10])}")
-        
-        # Data quality
+        # Data Quality - Enhanced with null statistics and column profiles
         if quality_info:
             sections.append("")
             sections.append("## Data Quality")
             
+            # Null statistics
+            if columns_stats := quality_info.get("columns"):
+                sections.append("")
+                sections.append("### Null Statistics (Top 10 columns by null %)")
+                # Sort by null percentage, show top 10
+                sorted_cols = sorted(
+                    columns_stats.items(),
+                    key=lambda x: x[1].get("null_percentage", 0),
+                    reverse=True
+                )[:10]
+                
+                for col_name, stats in sorted_cols:
+                    null_pct = stats.get("null_percentage", 0)
+                    if null_pct > 0:  # Only show columns with nulls
+                        sections.append(f"- **{col_name}**: {null_pct:.1f}% null")
+            
+            # Column profiles
+            if column_profiles := quality_info.get("column_profiles"):
+                sections.append("")
+                sections.append("### Column Profiles")
+                
+                # Numeric columns
+                numeric_cols = {k: v for k, v in column_profiles.items() if v.get("type") == "numeric"}
+                if numeric_cols:
+                    sections.append("")
+                    sections.append("**Numeric Columns:**")
+                    for col_name, profile in list(numeric_cols.items())[:10]:  # Top 10
+                        min_val = profile.get("min")
+                        max_val = profile.get("max")
+                        avg_val = profile.get("avg")
+                        distinct = profile.get("distinct_count", 0)
+                        
+                        # Format avg value properly
+                        if isinstance(avg_val, (int, float)):
+                            avg_str = f"{avg_val:.2f}"
+                        else:
+                            avg_str = str(avg_val) if avg_val is not None else "N/A"
+                        
+                        sections.append(
+                            f"- **{col_name}**: min={min_val}, max={max_val}, "
+                            f"avg={avg_str}, distinct={distinct:,}"
+                        )
+                
+                # String columns
+                string_cols = {k: v for k, v in column_profiles.items() if v.get("type") == "string"}
+                if string_cols:
+                    sections.append("")
+                    sections.append("**String Columns:**")
+                    for col_name, profile in list(string_cols.items())[:10]:  # Top 10
+                        min_len = profile.get("min_length")
+                        max_len = profile.get("max_length")
+                        distinct = profile.get("distinct_count", 0)
+                        sections.append(
+                            f"- **{col_name}**: length={min_len}-{max_len}, distinct={distinct:,}"
+                        )
+            
+            # Legacy quality info
             if freshness := quality_info.get("freshness"):
                 sections.append(f"- **Freshness**: {freshness}")
             
@@ -280,6 +354,23 @@ class MetadataFormatter:
             
             if issues := quality_info.get("quality_issues"):
                 sections.append(f"- **Issues**: {len(issues)} quality issues found")
+        
+        # Usage and lineage - Enhanced to show all dependencies
+        if lineage_info:
+            sections.append("")
+            sections.append("## Lineage")
+            
+            if upstream := lineage_info.get("upstream_tables"):
+                sections.append("")
+                sections.append("**Upstream Sources:**")
+                for table in upstream:  # Show all, not truncated
+                    sections.append(f"- {table}")
+            
+            if downstream := lineage_info.get("downstream_tables"):
+                sections.append("")
+                sections.append("**Downstream Consumers:**")
+                for table in downstream:  # Show all, not truncated
+                    sections.append(f"- {table}")
         
         # Security and governance
         if security_info or governance_info:
@@ -316,17 +407,6 @@ class MetadataFormatter:
             
             if total_cost := cost_info.get("total_monthly_cost_usd"):
                 sections.append(f"- **Total**: ${total_cost:.2f}/month")
-        
-        # Statistics
-        sections.append("")
-        sections.append("## Statistics")
-        if num_rows := table_metadata.get("num_rows"):
-            sections.append(f"- **Rows**: {num_rows:,}")
-        if num_bytes := table_metadata.get("num_bytes"):
-            size_gb = num_bytes / (1024**3)
-            sections.append(f"- **Size**: {size_gb:.2f} GB")
-        if modified := table_metadata.get("modified_time"):
-            sections.append(f"- **Last Modified**: {modified}")
         
         return "\n".join(sections)
     

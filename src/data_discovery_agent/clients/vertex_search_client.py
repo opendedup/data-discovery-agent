@@ -375,20 +375,98 @@ class VertexSearchClient:
         
         return created_doc.name
     
+    def update_document(
+        self,
+        document_id: str,
+        struct_data: Dict[str, Any],
+        content: str,
+    ) -> str:
+        """
+        Update an existing document in Vertex AI Search.
+        
+        Args:
+            document_id: Unique document ID (e.g., "project.dataset.table")
+            struct_data: Structured metadata (filterable fields)
+            content: Text content for search
+        
+        Returns:
+            Document name
+        """
+        
+        logger.debug(f"Updating document: {document_id}")
+        
+        # Build document path
+        document_path = f"{self.branch_path}/documents/{document_id}"
+        
+        document = discoveryengine.Document(
+            name=document_path,
+            id=document_id,
+            struct_data=struct_data,
+            content=discoveryengine.Document.Content(
+                mime_type="text/plain",
+                raw_bytes=content.encode('utf-8'),
+            ),
+        )
+        
+        request = discoveryengine.UpdateDocumentRequest(
+            document=document,
+        )
+        
+        updated_doc = self.document_client.update_document(request=request)
+        
+        logger.debug(f"Updated document: {updated_doc.name}")
+        
+        return updated_doc.name
+    
+    def upsert_document(
+        self,
+        document_id: str,
+        struct_data: Dict[str, Any],
+        content: str,
+    ) -> tuple[str, str]:
+        """
+        Create or update a document (upsert).
+        
+        Args:
+            document_id: Unique document ID (e.g., "project.dataset.table")
+            struct_data: Structured metadata (filterable fields)
+            content: Text content for search
+        
+        Returns:
+            Tuple of (document_name, operation: "created" or "updated")
+        """
+        
+        try:
+            # Try to create first
+            doc_name = self.create_document(document_id, struct_data, content)
+            return (doc_name, "created")
+        except Exception as e:
+            error_msg = str(e)
+            
+            # If document already exists, update it
+            if "409" in error_msg and "exists" in error_msg.lower():
+                doc_name = self.update_document(document_id, struct_data, content)
+                return (doc_name, "updated")
+            else:
+                # Re-raise other errors
+                raise
+    
     def create_documents_from_jsonl_file(
         self,
         jsonl_path: str,
         batch_size: int = 10,
+        upsert: bool = True,
     ) -> Dict[str, int]:
         """
-        Create documents from a local JSONL file.
+        Create/update documents from a local JSONL file.
         
         Since Vertex AI Search doesn't support JSONL import from GCS,
-        we read the JSONL and create documents via API.
+        we read the JSONL and create/update documents via API.
         
         Args:
             jsonl_path: Path to local JSONL file
             batch_size: Number of documents to create in parallel
+            upsert: If True, update existing documents. If False, skip existing documents.
         
         Returns:
             Statistics dict
@@ -397,11 +475,13 @@ class VertexSearchClient:
         import json
         from pathlib import Path
         
-        logger.info(f"Creating documents from {jsonl_path}")
+        operation = "Upserting" if upsert else "Creating"
+        logger.info(f"{operation} documents from {jsonl_path}")
         
         stats = {
             "total": 0,
             "created": 0,
+            "updated": 0,
             "failed": 0,
             "skipped": 0,
         }
@@ -435,18 +515,36 @@ class VertexSearchClient:
                     # Vertex AI Search document IDs can only contain: [a-zA-Z0-9-_]
                     sanitized_id = doc_id.replace(".", "_")
                     
-                    # Create document via API
-                    self.create_document(
-                        document_id=sanitized_id,
-                        struct_data=struct_data,
-                        content=content_text,
-                    )
-                    
-                    stats["created"] += 1
-                    
-                    # Progress update
-                    if stats["created"] % 10 == 0:
-                        logger.info(f"Created {stats['created']}/{stats['total']} documents...")
+                    if upsert:
+                        # Create or update document
+                        _, operation = self.upsert_document(
+                            document_id=sanitized_id,
+                            struct_data=struct_data,
+                            content=content_text,
+                        )
+                        
+                        if operation == "created":
+                            stats["created"] += 1
+                        else:
+                            stats["updated"] += 1
+                        
+                        # Progress update
+                        total_processed = stats["created"] + stats["updated"]
+                        if total_processed % 10 == 0:
+                            logger.info(f"Processed {total_processed}/{stats['total']} documents...")
+                    else:
+                        # Create document only (skip if exists)
+                        self.create_document(
+                            document_id=sanitized_id,
+                            struct_data=struct_data,
+                            content=content_text,
+                        )
+                        
+                        stats["created"] += 1
+                        
+                        # Progress update
+                        if stats["created"] % 10 == 0:
+                            logger.info(f"Created {stats['created']}/{stats['total']} documents...")
                 
                 except json.JSONDecodeError as e:
                     logger.error(f"Line {line_num}: JSON decode error: {e}")
@@ -455,12 +553,12 @@ class VertexSearchClient:
                 except Exception as e:
                     error_msg = str(e)
                     
-                    # Handle document already exists (409 conflict)
-                    if "409" in error_msg and "exists" in error_msg.lower():
+                    # Handle document already exists (409 conflict) - only in non-upsert mode
+                    if not upsert and "409" in error_msg and "exists" in error_msg.lower():
                         logger.info(f"Line {line_num}: Document {sanitized_id} already exists, skipping")
                         stats["skipped"] += 1
                     else:
-                        logger.error(f"Line {line_num}: Failed to create document: {e}")
+                        logger.error(f"Line {line_num}: Failed to process document: {e}")
                         stats["failed"] += 1
         
         logger.info(f"Document creation complete: {stats}")

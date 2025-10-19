@@ -60,13 +60,17 @@ class MarkdownFormatter:
         sections.append("")
         
         # Description
-        if asset.content.text:
-            sections.append("## 📝 Description")
-            sections.append("")
-            # Extract description from content text
+        sections.append("## Description")
+        sections.append("")
+        if extended_metadata and extended_metadata.get("description"):
+            sections.append(extended_metadata["description"])
+        elif asset.content and asset.content.text:
+            # Fallback to extracting from content
             description = self._extract_description_from_content(asset.content.text)
             sections.append(description)
-            sections.append("")
+        else:
+            sections.append("*No description available for this table.*")
+        sections.append("")
         
         # Schema
         sections.append(self._generate_schema_section(asset, extended_metadata))
@@ -82,8 +86,13 @@ class MarkdownFormatter:
             sections.append("")
         
         # Data Quality
-        if asset.struct_data.completeness_score or asset.struct_data.freshness_score:
-            sections.append(self._generate_quality_section(asset))
+        if asset.struct_data.completeness_score or asset.struct_data.freshness_score or (extended_metadata and extended_metadata.get("quality_stats")):
+            sections.append(self._generate_quality_section(asset, extended_metadata))
+            sections.append("")
+        
+        # Column Profiling
+        if extended_metadata and extended_metadata.get("column_profiles"):
+            sections.append(self._generate_column_profiles_section(extended_metadata["column_profiles"]))
             sections.append("")
         
         # Lineage (if available in extended metadata)
@@ -108,30 +117,18 @@ class MarkdownFormatter:
         
         badges = []
         
-        # Asset type badge
-        type_emoji = {
-            AssetType.TABLE: "📊",
-            AssetType.VIEW: "👁️",
-            AssetType.MATERIALIZED_VIEW: "💎",
-        }
-        emoji = type_emoji.get(asset.struct_data.asset_type, "📊")
-        badges.append(f"{emoji} {asset.struct_data.asset_type}")
+        # Asset type badge (ASCII-only)
+        badges.append(f"[{asset.struct_data.asset_type.upper()}]")
         
         # Security badges
         if asset.struct_data.has_pii:
-            badges.append("🔒 PII")
+            badges.append("[PII]")
         if asset.struct_data.has_phi:
-            badges.append("🏥 PHI")
+            badges.append("[PHI]")
         
         # Environment badge
-        env_emoji = {
-            "prod": "🔴",
-            "staging": "🟡",
-            "dev": "🟢",
-        }
         env = asset.struct_data.environment or "unknown"
-        emoji = env_emoji.get(env.lower(), "⚪")
-        badges.append(f"{emoji} {env.upper()}")
+        badges.append(f"[{env.upper()}]")
         
         badge_line = " | ".join(badges)
         
@@ -141,7 +138,7 @@ class MarkdownFormatter:
         """Generate executive summary"""
         
         lines = []
-        lines.append("## 📊 Executive Summary")
+        lines.append("## Executive Summary")
         lines.append("")
         
         # Quick facts
@@ -151,8 +148,7 @@ class MarkdownFormatter:
             facts.append(f"**{asset.struct_data.row_count:,}** rows")
         
         if asset.struct_data.size_bytes:
-            size_gb = asset.struct_data.size_bytes / (1024**3)
-            facts.append(f"**{size_gb:.2f} GB**")
+            facts.append(f"**{self._format_size(asset.struct_data.size_bytes)}**")
         
         if asset.struct_data.column_count:
             facts.append(f"**{asset.struct_data.column_count}** columns")
@@ -161,20 +157,20 @@ class MarkdownFormatter:
             facts.append(f"**${asset.struct_data.monthly_cost_usd:.2f}/month**")
         
         if facts:
-            lines.append(" • ".join(facts))
+            lines.append(" - ".join(facts))
             lines.append("")
         
         # Key attributes
         attributes = []
         
         if asset.struct_data.owner_email:
-            attributes.append(f"👤 **Owner**: {asset.struct_data.owner_email}")
+            attributes.append(f"**Owner**: {asset.struct_data.owner_email}")
         
         if asset.struct_data.team:
-            attributes.append(f"👥 **Team**: {asset.struct_data.team}")
+            attributes.append(f"**Team**: {asset.struct_data.team}")
         
         if asset.struct_data.last_modified_timestamp:
-            attributes.append(f"🕒 **Last Modified**: {self._format_date(asset.struct_data.last_modified_timestamp)}")
+            attributes.append(f"**Last Modified**: {self._format_date(asset.struct_data.last_modified_timestamp)}")
         
         if attributes:
             lines.extend(attributes)
@@ -185,7 +181,7 @@ class MarkdownFormatter:
         """Generate key metrics table"""
         
         lines = []
-        lines.append("## 📈 Key Metrics")
+        lines.append("## Key Metrics")
         lines.append("")
         lines.append("| Metric | Value |")
         lines.append("|--------|-------|")
@@ -196,8 +192,7 @@ class MarkdownFormatter:
             metrics.append(("Row Count", f"{asset.struct_data.row_count:,}"))
         
         if asset.struct_data.size_bytes is not None:
-            size_gb = asset.struct_data.size_bytes / (1024**3)
-            metrics.append(("Size", f"{size_gb:.2f} GB"))
+            metrics.append(("Size", self._format_size(asset.struct_data.size_bytes)))
         
         if asset.struct_data.column_count is not None:
             metrics.append(("Columns", str(asset.struct_data.column_count)))
@@ -225,20 +220,28 @@ class MarkdownFormatter:
     def _generate_schema_section(
         self, asset: BigQueryAssetSchema, extended_metadata: Optional[Dict[str, Any]]
     ) -> str:
-        """Generate schema section"""
+        """Generate schema section with sample values"""
         
         lines = []
-        lines.append("## 📋 Schema")
+        lines.append("## Schema")
         lines.append("")
         
         # Extract schema from extended metadata if available
         schema = None
+        sample_values = {}
+        
         if extended_metadata and "schema" in extended_metadata:
             schema = extended_metadata["schema"]
         
+        # Get sample values from extended metadata
+        if extended_metadata and "quality_stats" in extended_metadata:
+            quality_stats = extended_metadata["quality_stats"]
+            if isinstance(quality_stats, dict) and "sample_values" in quality_stats:
+                sample_values = quality_stats["sample_values"]
+        
         if schema and "fields" in schema:
-            lines.append("| Column | Type | Mode | Description |")
-            lines.append("|--------|------|------|-------------|")
+            lines.append("| Column | Type | Mode | Description | Sample Values |")
+            lines.append("|--------|------|------|-------------|---------------|")
             
             for field in schema["fields"]:
                 name = field.get("name", "")
@@ -246,11 +249,21 @@ class MarkdownFormatter:
                 mode = field.get("mode", "NULLABLE")
                 description = field.get("description", "")
                 
-                # Add PII indicator if field looks sensitive
-                if self._is_sensitive_field(name):
-                    name = f"{name} 🔒"
+                # Get sample values for this column
+                samples = sample_values.get(name, [])
+                if samples:
+                    # Truncate long values and join
+                    samples_display = ", ".join([str(s)[:30] for s in samples[:3]])
+                    if len(samples_display) > 50:
+                        samples_display = samples_display[:50] + "..."
+                else:
+                    samples_display = ""
                 
-                lines.append(f"| {name} | {type_} | {mode} | {description} |")
+                # Add PII indicator if field looks sensitive (ASCII-only)
+                if self._is_sensitive_field(name):
+                    name = f"{name} [SENSITIVE]"
+                
+                lines.append(f"| {name} | {type_} | {mode} | {description} | {samples_display} |")
         else:
             lines.append(f"*Schema contains {asset.struct_data.column_count or 'unknown'} columns*")
             lines.append("")
@@ -262,7 +275,7 @@ class MarkdownFormatter:
         """Generate security and governance section"""
         
         lines = []
-        lines.append("## 🔐 Security & Governance")
+        lines.append("## Security & Governance")
         lines.append("")
         
         governance_items = []
@@ -308,7 +321,7 @@ class MarkdownFormatter:
         """Generate cost analysis section"""
         
         lines = []
-        lines.append("## 💰 Cost Analysis")
+        lines.append("## Cost Analysis")
         lines.append("")
         
         monthly_cost = asset.struct_data.monthly_cost_usd
@@ -338,28 +351,55 @@ class MarkdownFormatter:
         
         return "\n".join(lines)
     
-    def _generate_quality_section(self, asset: BigQueryAssetSchema) -> str:
+    def _generate_quality_section(self, asset: BigQueryAssetSchema, extended_metadata: Optional[Dict[str, Any]] = None) -> str:
         """Generate data quality section"""
         
         lines = []
-        lines.append("## ✅ Data Quality")
+        lines.append("## Data Quality")
         lines.append("")
         
         metrics = []
         
         if asset.struct_data.completeness_score is not None:
             score = asset.struct_data.completeness_score * 100
-            emoji = "🟢" if score >= 95 else "🟡" if score >= 80 else "🔴"
-            metrics.append(f"{emoji} **Completeness**: {score:.1f}%")
+            status = "GOOD" if score >= 95 else "FAIR" if score >= 80 else "POOR"
+            metrics.append(f"**Completeness**: {score:.1f}% [{status}]")
         
         if asset.struct_data.freshness_score is not None:
             score = asset.struct_data.freshness_score * 100
-            emoji = "🟢" if score >= 95 else "🟡" if score >= 80 else "🔴"
-            metrics.append(f"{emoji} **Freshness**: {score:.1f}%")
+            status = "GOOD" if score >= 95 else "FAIR" if score >= 80 else "POOR"
+            metrics.append(f"**Freshness**: {score:.1f}% [{status}]")
+        
+        # Add null statistics if available
+        if extended_metadata and "quality_stats" in extended_metadata:
+            quality_stats = extended_metadata["quality_stats"]
+            if quality_stats and "columns" in quality_stats:
+                lines.append("### Null Statistics")
+                lines.append("")
+                lines.append("| Column | Null Count | Null % |")
+                lines.append("|--------|------------|--------|")
+                
+                # Sort by null percentage (highest first)
+                sorted_cols = sorted(
+                    quality_stats["columns"].items(),
+                    key=lambda x: x[1].get("null_percentage", 0),
+                    reverse=True
+                )
+                
+                # Show top 20 columns with highest null percentage
+                for col_name, stats in sorted_cols[:20]:
+                    null_count = stats.get("null_count", 0)
+                    null_pct = stats.get("null_percentage", 0.0)
+                    lines.append(f"| {col_name} | {null_count:,} | {null_pct:.1f}% |")
+                
+                if len(sorted_cols) > 20:
+                    lines.append(f"| *...and {len(sorted_cols) - 20} more columns* | | |")
+                
+                lines.append("")
         
         if metrics:
             lines.extend(metrics)
-        else:
+        elif not (extended_metadata and "quality_stats" in extended_metadata):
             lines.append("*No quality metrics available*")
         
         return "\n".join(lines)
@@ -368,7 +408,7 @@ class MarkdownFormatter:
         """Generate lineage section"""
         
         lines = []
-        lines.append("## 🔗 Data Lineage")
+        lines.append("## Data Lineage")
         lines.append("")
         
         upstream = lineage.get("upstream_tables", [])
@@ -400,7 +440,7 @@ class MarkdownFormatter:
         """Generate usage patterns section"""
         
         lines = []
-        lines.append("## 📊 Usage Patterns")
+        lines.append("## Usage Patterns")
         lines.append("")
         
         query_count = usage.get("query_count_30d")
@@ -427,7 +467,7 @@ class MarkdownFormatter:
         lines.append("")
         lines.append(f"**Full Path**: `{asset.struct_data.project_id}.{asset.struct_data.dataset_id}.{asset.struct_data.table_id}`")
         lines.append("")
-        lines.append("💡 *This report is generated from cached metadata. For real-time information, query the live system.*")
+        lines.append("*This report is generated from cached metadata. For real-time information, query the live system.*")
         
         return "\n".join(lines)
     
@@ -462,6 +502,21 @@ class MarkdownFormatter:
         except:
             return timestamp
     
+    def _format_size(self, size_bytes: int) -> str:
+        """Format size in bytes to human-readable format"""
+        if size_bytes == 0:
+            return "0 B"
+        
+        # Convert to appropriate unit
+        if size_bytes < 1024:
+            return f"{size_bytes} B"
+        elif size_bytes < 1024**2:
+            return f"{size_bytes / 1024:.2f} KB"
+        elif size_bytes < 1024**3:
+            return f"{size_bytes / (1024**2):.2f} MB"
+        else:
+            return f"{size_bytes / (1024**3):.2f} GB"
+    
     def _is_sensitive_field(self, field_name: str) -> bool:
         """Check if field name suggests sensitive data"""
         sensitive_keywords = [
@@ -470,6 +525,76 @@ class MarkdownFormatter:
         ]
         field_lower = field_name.lower()
         return any(keyword in field_lower for keyword in sensitive_keywords)
+    
+    def _generate_column_profiles_section(self, column_profiles: Dict[str, Any]) -> str:
+        """Generate column profiling section"""
+        
+        lines = []
+        lines.append("## Column Profiles")
+        lines.append("")
+        
+        if not column_profiles:
+            lines.append("*No column profiles available*")
+            return "\n".join(lines)
+        
+        # Numeric columns
+        numeric_cols = {k: v for k, v in column_profiles.items() if v.get("type") == "numeric"}
+        if numeric_cols:
+            lines.append("### Numeric Columns")
+            lines.append("")
+            lines.append("| Column | Min | Max | Avg | Distinct |")
+            lines.append("|--------|-----|-----|-----|----------|")
+            
+            for col_name, profile in sorted(numeric_cols.items()):
+                min_val = profile.get("min")
+                max_val = profile.get("max")
+                avg_val = profile.get("avg")
+                distinct = profile.get("distinct_count", 0)
+                
+                # Format values
+                min_str = f"{min_val:.2f}" if isinstance(min_val, (int, float)) and min_val is not None else str(min_val)
+                max_str = f"{max_val:.2f}" if isinstance(max_val, (int, float)) and max_val is not None else str(max_val)
+                avg_str = f"{avg_val:.2f}" if isinstance(avg_val, (int, float)) and avg_val is not None else str(avg_val)
+                
+                lines.append(f"| {col_name} | {min_str} | {max_str} | {avg_str} | {distinct:,} |")
+            
+            lines.append("")
+        
+        # String columns
+        string_cols = {k: v for k, v in column_profiles.items() if v.get("type") == "string"}
+        if string_cols:
+            lines.append("### String Columns")
+            lines.append("")
+            lines.append("| Column | Min Length | Max Length | Distinct |")
+            lines.append("|--------|------------|------------|----------|")
+            
+            for col_name, profile in sorted(string_cols.items()):
+                min_len = profile.get("min_length")
+                max_len = profile.get("max_length")
+                distinct = profile.get("distinct_count", 0)
+                
+                lines.append(f"| {col_name} | {min_len} | {max_len} | {distinct:,} |")
+            
+            lines.append("")
+        
+        # Other columns (timestamp, etc.)
+        other_cols = {k: v for k, v in column_profiles.items() if v.get("type") == "other"}
+        if other_cols:
+            lines.append("### Other Columns (Timestamp, etc.)")
+            lines.append("")
+            lines.append("| Column | Distinct | Null % |")
+            lines.append("|--------|----------|--------|")
+            
+            for col_name, profile in sorted(other_cols.items()):
+                distinct = profile.get("distinct_count", 0)
+                null_ratio = profile.get("null_ratio", 0.0)
+                null_pct = null_ratio * 100.0
+                
+                lines.append(f"| {col_name} | {distinct:,} | {null_pct:.1f}% |")
+            
+            lines.append("")
+        
+        return "\n".join(lines)
     
     def export_to_file(self, markdown: str, output_path: Path) -> None:
         """Export Markdown report to file"""
@@ -495,7 +620,12 @@ class MarkdownFormatter:
         storage_client = storage.Client()
         bucket = storage_client.bucket(gcs_bucket)
         blob = bucket.blob(gcs_path)
-        blob.upload_from_string(markdown, content_type="text/markdown")
+        
+        # Explicitly encode as UTF-8 and set content type
+        blob.upload_from_string(
+            markdown.encode('utf-8'),
+            content_type="text/markdown; charset=utf-8"
+        )
         
         gcs_uri = f"gs://{gcs_bucket}/{gcs_path}"
         logger.info(f"Exported report to {gcs_uri}")

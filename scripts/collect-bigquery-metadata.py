@@ -2,14 +2,25 @@
 """
 BigQuery Metadata Collection Script
 
-Scans BigQuery projects/datasets/tables and exports metadata to JSONL for Vertex AI Search.
+Scans BigQuery projects/datasets/tables and exports complete metadata to JSONL 
+for Vertex AI Search. Automatically re-indexes the data after each collection.
+
+The JSONL now includes:
+- Full schema (all columns, including nested fields)
+- Data quality metrics (null statistics)
+- Column profiles (min/max/avg/distinct for numeric and string columns)
+- Data lineage (upstream and downstream dependencies)
+- Governance metadata (labels, tags, PII/PHI indicators)
 
 Usage:
     poetry run python scripts/collect-bigquery-metadata.py [options]
     
 Examples:
-    # Collect from current project only
+    # Collect from current project and auto-import to Vertex AI Search (default)
     poetry run python scripts/collect-bigquery-metadata.py
+    
+    # Collect with Dataplex profiling (richer data)
+    poetry run python scripts/collect-bigquery-metadata.py --use-dataplex
     
     # Collect from specific projects
     poetry run python scripts/collect-bigquery-metadata.py --projects proj1 proj2
@@ -17,8 +28,8 @@ Examples:
     # Test with limited tables
     poetry run python scripts/collect-bigquery-metadata.py --max-tables 10
     
-    # Export and trigger import
-    poetry run python scripts/collect-bigquery-metadata.py --import
+    # Skip automatic import (for testing)
+    poetry run python scripts/collect-bigquery-metadata.py --skip-import
 """
 
 import argparse
@@ -79,6 +90,31 @@ def main():
         action='store_true',
         help='Skip views, collect tables only'
     )
+    parser.add_argument(
+        '--use-dataplex',
+        action='store_true',
+        help='Use Dataplex Data Profile Scan for richer profiling (instead of SQL-based)'
+    )
+    parser.add_argument(
+        '--dataplex-location',
+        default='us-central1',
+        help='Dataplex location for profile scans (default: us-central1)'
+    )
+    parser.add_argument(
+        '--use-gemini',
+        action='store_true',
+        default=True,
+        help='Use Gemini 2.5 Flash to generate descriptions for tables without them (default: enabled)'
+    )
+    parser.add_argument(
+        '--skip-gemini',
+        action='store_true',
+        help='Skip Gemini description generation'
+    )
+    parser.add_argument(
+        '--gemini-api-key',
+        help='Gemini API key (or use GEMINI_API_KEY env var)'
+    )
     
     # Export options
     parser.add_argument(
@@ -112,7 +148,13 @@ def main():
         '--import',
         dest='trigger_import',
         action='store_true',
-        help='Trigger Vertex AI Search import after export'
+        default=True,
+        help='Trigger Vertex AI Search import after export (default: enabled)'
+    )
+    parser.add_argument(
+        '--skip-import',
+        action='store_true',
+        help='Skip Vertex AI Search import (documents won\'t be searchable until imported)'
     )
     parser.add_argument(
         '--datastore',
@@ -129,6 +171,14 @@ def main():
     
     args = parser.parse_args()
     
+    # Handle skip-import flag
+    if args.skip_import:
+        args.trigger_import = False
+    
+    # Handle skip-gemini flag
+    if args.skip_gemini:
+        args.use_gemini = False
+    
     setup_logging(args.verbose)
     logger = logging.getLogger(__name__)
     
@@ -141,6 +191,11 @@ def main():
     print(f"Exclude datasets: {args.exclude_datasets}")
     print(f"Max tables: {args.max_tables or 'unlimited'}")
     print(f"Include views: {not args.skip_views}")
+    print(f"Dataplex profiling: {'enabled' if args.use_dataplex else 'disabled (SQL fallback)'}")
+    if args.use_dataplex:
+        print(f"Dataplex location: {args.dataplex_location}")
+    print(f"Gemini descriptions: {'enabled' if args.use_gemini else 'disabled'}")
+    print(f"Auto-import to Vertex AI Search: {'enabled' if args.trigger_import else 'disabled'}")
     print()
     
     try:
@@ -152,6 +207,10 @@ def main():
             project_id=args.project,
             target_projects=args.projects,
             exclude_datasets=args.exclude_datasets,
+            use_dataplex_profiling=args.use_dataplex,
+            dataplex_location=args.dataplex_location,
+            use_gemini_descriptions=args.use_gemini,
+            gemini_api_key=args.gemini_api_key,
         )
         
         assets = collector.collect_all(
@@ -212,17 +271,99 @@ def main():
             markdown_formatter = MarkdownFormatter(project_id=args.project)
             markdown_count = 0
             
-            for asset in assets:
+            # We need to regenerate with schema info from the collector
+            # The collector has the raw schema, but it's not in the BigQueryAssetSchema
+            # Let's collect again with schema info properly stored
+            
+            for i, asset in enumerate(assets):
                 try:
-                    # Generate Markdown report
-                    report = markdown_formatter.generate_table_report(asset)
+                    # Extract struct data
+                    struct_dict = asset.struct_data.model_dump() if hasattr(asset.struct_data, 'model_dump') else asset.struct_data.dict()
+                    
+                    # Build extended metadata by re-collecting the table metadata with schema
+                    dataset_id = struct_dict.get('dataset_id')
+                    table_id = struct_dict.get('table_id')
+                    project_id = struct_dict.get('project_id', args.project)
+                    
+                    # Get the full table schema from BigQuery
+                    from google.cloud import bigquery as bq
+                    bq_client = bq.Client(project=project_id)
+                    table_ref = f"{project_id}.{dataset_id}.{table_id}"
+                    
+                    try:
+                        table = bq_client.get_table(table_ref)
+                        
+                        # Build schema dict for extended_metadata with nested fields
+                        def format_field(field, prefix=""):
+                            """Recursively format a field including nested fields"""
+                            field_name = f"{prefix}{field.name}" if prefix else field.name
+                            field_dict = {
+                                "name": field_name,
+                                "type": field.field_type,
+                                "mode": field.mode,
+                                "description": field.description or "",
+                            }
+                            
+                            fields = [field_dict]
+                            
+                            # If this is a RECORD with nested fields, add them too
+                            if field.field_type in ('RECORD', 'STRUCT') and field.fields:
+                                for nested_field in field.fields:
+                                    # Recursively format nested fields
+                                    nested_fields = format_field(nested_field, f"{field_name}.")
+                                    fields.extend(nested_fields)
+                            
+                            return fields
+                        
+                        schema_fields = []
+                        for field in table.schema:
+                            schema_fields.extend(format_field(field))
+                        
+                        # Get data quality stats
+                        quality_stats = collector._get_quality_stats(project_id, dataset_id, table_id, table.schema)
+                        
+                        # Get column profiling
+                        column_profiles = collector._get_column_profiles(project_id, dataset_id, table_id, table.schema)
+                        
+                        # Get sample values - use Dataplex if available (same logic as JSONL)
+                        sample_values = {}
+                        if collector.dataplex_profiler:
+                            sample_values = collector.dataplex_profiler.get_sample_values_from_profile(
+                                dataset_id, table_id
+                            )
+                            if sample_values:
+                                logger.info(f"Using Dataplex sample values for Markdown: {table_id} ({len(sample_values)} columns)")
+                        
+                        # Fall back to SQL-based sampling if no Dataplex samples
+                        if not sample_values and table.schema:
+                            logger.info(f"Fetching sample values via SQL for Markdown: {table_id}")
+                            sample_values = collector._get_sample_values(project_id, dataset_id, table_id, table.schema)
+                        
+                        # Get data lineage
+                        lineage = collector._get_lineage(project_id, dataset_id, table_id)
+                        
+                        # Merge sample values into quality_stats
+                        if quality_stats and sample_values:
+                            quality_stats["sample_values"] = sample_values
+                        elif sample_values:
+                            quality_stats = {"sample_values": sample_values}
+                        
+                        extended_metadata = {
+                            "schema": {"fields": schema_fields},
+                            "description": table.description or "",
+                            "quality_stats": quality_stats,
+                            "column_profiles": column_profiles,
+                            "lineage": lineage if lineage else None,
+                        }
+                    except Exception as e:
+                        logger.warning(f"Could not fetch extended metadata for {table_ref}: {e}")
+                        extended_metadata = {}
+                    
+                    # Generate Markdown report with extended metadata
+                    report = markdown_formatter.generate_table_report(asset, extended_metadata=extended_metadata)
                     
                     # Export to GCS if not skipping
                     if not args.skip_gcs:
-                        # Convert struct_data to dict to access fields
-                        struct_dict = asset.struct_data.model_dump() if hasattr(asset.struct_data, 'model_dump') else asset.struct_data.dict()
-                        dataset_id = struct_dict.get('dataset_id', 'unknown')
-                        table_id = struct_dict.get('table_id', 'unknown')
                         gcs_path = f"{dataset_id}/{table_id}.md"
                         
                         markdown_formatter.export_to_gcs(
@@ -232,6 +373,10 @@ def main():
                         )
                     
                     markdown_count += 1
+                    
+                    # Progress update
+                    if markdown_count % 10 == 0:
+                        print(f"  Generated {markdown_count}/{len(assets)} reports...")
                     
                 except Exception as e:
                     logger.error(f"Failed to generate Markdown for {asset.id}: {e}")
@@ -262,9 +407,10 @@ def main():
                     batch_size=10,
                 )
                 
-                print(f"✓ Document creation complete!")
+                print(f"✓ Document indexing complete!")
                 print(f"  Total:   {stats['total']}")
                 print(f"  Created: {stats['created']}")
+                print(f"  Updated: {stats.get('updated', 0)}")
                 print(f"  Failed:  {stats['failed']}")
                 print(f"  Skipped: {stats['skipped']}")
                 print(f"\n  Check data store in Cloud Console:")
@@ -276,8 +422,8 @@ def main():
                 print(f"\n   Alternative: Convert JSONL to TXT and use GCS import")
                 print(f"   Or create documents manually via API")
         
-        elif args.trigger_import:
-            print("\nStep 4: Skipped document creation (no --import flag)")
+        else:
+            print("\nStep 4: Skipped document creation (--skip-import flag)")
         
         # Summary
         print("\n" + "=" * 70)
@@ -286,11 +432,13 @@ def main():
         
         stats = collector.get_stats()
         print(f"\nStatistics:")
-        print(f"  Projects scanned:  {stats['projects_scanned']}")
-        print(f"  Datasets scanned:  {stats['datasets_scanned']}")
-        print(f"  Tables scanned:    {stats['tables_scanned']}")
-        print(f"  Assets exported:   {len(assets)}")
-        print(f"  Errors:            {stats['errors']}")
+        print(f"  Projects scanned:         {stats['projects_scanned']}")
+        print(f"  Datasets scanned:         {stats['datasets_scanned']}")
+        print(f"  Tables scanned:           {stats['tables_scanned']}")
+        print(f"  Assets exported:          {len(assets)}")
+        if stats.get('descriptions_generated', 0) > 0:
+            print(f"  Descriptions generated:   {stats['descriptions_generated']}")
+        print(f"  Errors:                   {stats['errors']}")
         
         print(f"\nOutput:")
         print(f"  Local JSONL:      {output_path}")
@@ -300,11 +448,15 @@ def main():
             print(f"  Markdown reports: gs://{args.reports_bucket}/")
         
         print("\nNext steps:")
-        if not args.trigger_import:
-            print("1. Trigger Vertex AI Search import (run with --import)")
-        print("2. Wait 2-10 minutes for indexing to complete")
-        print("3. Test search: poetry run python examples/phase1_complete_example.py")
-        print("4. View Markdown reports in GCS Console or locally")
+        if args.trigger_import:
+            print("1. Wait 2-10 minutes for indexing to complete in Vertex AI Search")
+            print("2. Test search: poetry run python scripts/test-search.py 'your query'")
+            print("3. View Markdown reports in GCS Console or locally")
+        else:
+            print("1. Trigger Vertex AI Search import (run without --skip-import)")
+            print("2. Wait 2-10 minutes for indexing to complete")
+            print("3. Test search: poetry run python scripts/test-search.py 'your query'")
+            print("4. View Markdown reports in GCS Console or locally")
         print()
         
         return 0
