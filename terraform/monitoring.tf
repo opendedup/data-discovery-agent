@@ -5,7 +5,7 @@
 resource "google_logging_project_sink" "discovery_audit_sink" {
   name        = "data-discovery-audit-logs"
   destination = "storage.googleapis.com/${google_storage_bucket.reports_bucket.name}"
-  
+
   # Filter for relevant audit logs
   filter = <<-EOT
     protoPayload.serviceName="bigquery.googleapis.com"
@@ -31,12 +31,12 @@ resource "google_storage_bucket_iam_member" "audit_log_writer" {
 resource "google_monitoring_notification_channel" "email" {
   display_name = "Data Discovery Email Alerts"
   type         = "email"
-  
+
   labels = {
-    email_address = "alerts@example.com"  # Change this!
+    email_address = "alerts@example.com" # Change this!
   }
 
-  enabled = false  # Set to true and configure email when ready
+  enabled = false # Set to true and configure email when ready
 }
 
 # Alert policy for GKE cluster health
@@ -82,16 +82,16 @@ resource "google_monitoring_alert_policy" "gke_node_health" {
 resource "google_monitoring_alert_policy" "bucket_size" {
   display_name = "Data Discovery - Bucket Size Alert"
   combiner     = "OR"
-  
+
   conditions {
     display_name = "Large Bucket Size"
-    
+
     condition_threshold {
       filter          = "resource.type = \"gcs_bucket\" AND (resource.labels.bucket_name = \"${var.jsonl_bucket_name}\" OR resource.labels.bucket_name = \"${var.reports_bucket_name}\") AND metric.type = \"storage.googleapis.com/storage/total_bytes\""
       duration        = "300s"
       comparison      = "COMPARISON_GT"
-      threshold_value = 100000000000  # 100 GB
-      
+      threshold_value = 100000000000 # 100 GB
+
       aggregations {
         alignment_period   = "3600s"
         per_series_aligner = "ALIGN_MEAN"
@@ -102,7 +102,7 @@ resource "google_monitoring_alert_policy" "bucket_size" {
   # Uncomment when notification channel is configured
   # notification_channels = [google_monitoring_notification_channel.email.name]
 
-  enabled = false  # Enable when ready
+  enabled = false # Enable when ready
 
   depends_on = [
     google_storage_bucket.jsonl_bucket,

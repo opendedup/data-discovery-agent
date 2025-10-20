@@ -80,3 +80,11 @@ scripts/create-datastore.py
 key.json
 credentials.json
 service-account.json
+
+# Kubernetes secrets
+k8s/secret-prod.yaml
+k8s/*-secret.yaml
+!k8s/secret.yaml
+
+# Docker
+.dockerignore

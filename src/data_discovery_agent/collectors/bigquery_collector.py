@@ -6,6 +6,7 @@ This is the foundation of Phase 2 - populating Vertex AI Search with discoverabl
 """
 
 import logging
+import os
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -65,7 +66,21 @@ class BigQueryCollector:
         """
         self.project_id = project_id
         self.target_projects = target_projects or [project_id]
-        self.exclude_datasets = exclude_datasets or ['_staging', 'temp_', 'tmp_']
+        
+        # Build exclusion list - always exclude the metadata dataset to avoid circular indexing
+        default_excludes = ['_staging', 'temp_', 'tmp_']
+        
+        # Get the metadata dataset from env and add to exclusions
+        metadata_dataset = os.getenv("BQ_DATASET", "data_discovery")
+        if metadata_dataset not in default_excludes:
+            default_excludes.append(metadata_dataset)
+        
+        self.exclude_datasets = exclude_datasets or default_excludes
+        
+        # Ensure metadata dataset is in exclusions even if user provided custom list
+        if metadata_dataset not in self.exclude_datasets:
+            self.exclude_datasets.append(metadata_dataset)
+        
         self.use_dataplex_profiling = use_dataplex_profiling
         self.max_workers = max_workers
         self.stats_lock = Lock()  # Thread-safe stats updates
@@ -125,7 +140,8 @@ class BigQueryCollector:
         
         logger.info(
             f"Initialized BigQueryCollector for project={project_id}, "
-            f"targets={target_projects}"
+            f"targets={target_projects}, "
+            f"excluding datasets: {self.exclude_datasets}"
         )
     
     def collect_all(

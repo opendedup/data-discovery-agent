@@ -1,0 +1,112 @@
+# =============================================================================
+# Kubernetes Service for MCP Service
+# =============================================================================
+# Exposes the MCP service within the cluster and optionally externally
+# =============================================================================
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: mcp-service
+  namespace: data-discovery
+  labels:
+    app: data-discovery-agent
+    component: mcp-service
+  annotations:
+    cloud.google.com/neg: '{"ingress": true}'
+    cloud.google.com/backend-config: '{"default": "mcp-backend-config"}'
+spec:
+  type: ClusterIP  # Internal service by default
+  
+  selector:
+    app: data-discovery-agent
+    component: mcp-service
+  
+  ports:
+  - name: http
+    port: 80
+    targetPort: 8080
+    protocol: TCP
+  
+  sessionAffinity: ClientIP
+  sessionAffinityConfig:
+    clientIP:
+      timeoutSeconds: 10800  # 3 hours
+
+---
+# =============================================================================
+# LoadBalancer Service (Optional - for external access)
+# =============================================================================
+# Uncomment to expose service externally via GCP Load Balancer
+
+# apiVersion: v1
+# kind: Service
+# metadata:
+#   name: mcp-service-external
+#   namespace: data-discovery
+#   labels:
+#     app: data-discovery-agent
+#     component: mcp-service
+#   annotations:
+#     # GCP-specific annotations
+#     cloud.google.com/load-balancer-type: "Internal"  # or "External"
+#     networking.gke.io/load-balancer-type: "Internal"
+# spec:
+#   type: LoadBalancer
+#   
+#   selector:
+#     app: data-discovery-agent
+#     component: mcp-service
+#   
+#   ports:
+#   - name: http
+#     port: 80
+#     targetPort: 8080
+#     protocol: TCP
+#   
+#   # Static IP (optional - reserve in GCP first)
+#   # loadBalancerIP: "10.0.0.100"
+
+---
+# =============================================================================
+# Backend Config for GCP Load Balancer (Optional)
+# =============================================================================
+
+apiVersion: cloud.google.com/v1
+kind: BackendConfig
+metadata:
+  name: mcp-backend-config
+  namespace: data-discovery
+spec:
+  # Health check configuration
+  healthCheck:
+    checkIntervalSec: 10
+    timeoutSec: 5
+    healthyThreshold: 2
+    unhealthyThreshold: 3
+    type: HTTP
+    requestPath: /health
+    port: 8080
+  
+  # Connection draining timeout
+  connectionDraining:
+    drainingTimeoutSec: 60
+  
+  # Session affinity
+  sessionAffinity:
+    affinityType: "CLIENT_IP"
+    affinityCookieTtlSec: 10800
+  
+  # Timeout settings
+  timeoutSec: 30
+  
+  # IAP (Identity-Aware Proxy) - Optional
+  # iap:
+  #   enabled: true
+  #   oauthclientCredentials:
+  #     secretName: oauth-client-secret
+  
+  # Cloud CDN - Optional (not typically used for MCP)
+  # cdn:
+  #   enabled: false
+

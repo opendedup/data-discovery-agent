@@ -36,7 +36,7 @@ echo -e "${GREEN}✓ Prerequisites met${NC}"
 echo ""
 
 # Set variables
-PROJECT_ID="${PROJECT_ID:-lennyisagoodboy}"
+PROJECT_ID="${PROJECT_ID:-$(gcloud config get-value project 2>/dev/null)}"
 REGION="${REGION:-us-central1}"
 DATASTORE_ID="${DATASTORE_ID:-data-discovery-metadata}"
 JSONL_BUCKET="${JSONL_BUCKET:-${PROJECT_ID}-data-discovery-jsonl}"

@@ -22,7 +22,7 @@ resource "google_storage_bucket" "jsonl_bucket" {
   # Lifecycle rules to manage storage costs
   lifecycle_rule {
     condition {
-      age = 90  # Delete files older than 90 days
+      age = 90 # Delete files older than 90 days
     }
     action {
       type = "Delete"
@@ -31,7 +31,7 @@ resource "google_storage_bucket" "jsonl_bucket" {
 
   lifecycle_rule {
     condition {
-      age = 30  # Move to Nearline after 30 days
+      age = 30 # Move to Nearline after 30 days
     }
     action {
       type          = "SetStorageClass"
@@ -75,7 +75,7 @@ resource "google_storage_bucket" "reports_bucket" {
   # Lifecycle rules
   lifecycle_rule {
     condition {
-      age = 180  # Keep reports for 6 months
+      age = 180 # Keep reports for 6 months
     }
     action {
       type = "Delete"
@@ -84,7 +84,7 @@ resource "google_storage_bucket" "reports_bucket" {
 
   lifecycle_rule {
     condition {
-      age = 60  # Move to Nearline after 60 days
+      age = 60 # Move to Nearline after 60 days
     }
     action {
       type          = "SetStorageClass"

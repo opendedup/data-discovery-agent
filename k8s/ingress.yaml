@@ -1,0 +1,89 @@
+# =============================================================================
+# Kubernetes Ingress for MCP Service (Optional)
+# =============================================================================
+# Provides HTTP(S) load balancing and external access with SSL
+# Uncomment and configure if you need external access with custom domain
+# =============================================================================
+
+# apiVersion: networking.k8s.io/v1
+# kind: Ingress
+# metadata:
+#   name: mcp-service-ingress
+#   namespace: data-discovery
+#   labels:
+#     app: data-discovery-agent
+#     component: mcp-service
+#   annotations:
+#     # GKE Ingress annotations
+#     kubernetes.io/ingress.class: "gce"
+#     kubernetes.io/ingress.global-static-ip-name: "mcp-service-ip"
+#     
+#     # SSL configuration
+#     networking.gke.io/managed-certificates: "mcp-service-cert"
+#     
+#     # Redirect HTTP to HTTPS
+#     ingress.gcp.kubernetes.io/pre-shared-cert: "mcp-service-cert"
+#     kubernetes.io/ingress.allow-http: "false"
+#     
+#     # Backend configuration
+#     cloud.google.com/backend-config: '{"default": "mcp-backend-config"}'
+#     
+#     # Connection timeout
+#     cloud.google.com/timeout: "30s"
+# 
+# spec:
+#   rules:
+#   - host: mcp.your-domain.com
+#     http:
+#       paths:
+#       - path: /*
+#         pathType: ImplementationSpecific
+#         backend:
+#           service:
+#             name: mcp-service
+#             port:
+#               number: 80
+#   
+#   # Default backend (optional)
+#   defaultBackend:
+#     service:
+#       name: mcp-service
+#       port:
+#         number: 80
+
+---
+# =============================================================================
+# Managed Certificate (GCP)
+# =============================================================================
+
+# apiVersion: networking.gke.io/v1
+# kind: ManagedCertificate
+# metadata:
+#   name: mcp-service-cert
+#   namespace: data-discovery
+# spec:
+#   domains:
+#   - mcp.your-domain.com
+
+---
+# =============================================================================
+# Setup Instructions:
+# =============================================================================
+#
+# 1. Reserve a static IP address:
+#    gcloud compute addresses create mcp-service-ip --global
+#
+# 2. Update your DNS records:
+#    - Add an A record pointing to the reserved IP
+#    - Wait for DNS propagation
+#
+# 3. Update the host in the Ingress above
+#
+# 4. Apply the manifests:
+#    kubectl apply -f k8s/ingress.yaml
+#
+# 5. Wait for certificate provisioning (10-20 minutes):
+#    kubectl describe managedcertificate mcp-service-cert -n data-discovery
+#
+# =============================================================================
+

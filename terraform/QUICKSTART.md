@@ -32,8 +32,8 @@ This script will:
 # Login to GCP
 gcloud auth login
 
-# Set project
-gcloud config set project lennyisagoodboy
+# Set project (replace with your project ID)
+gcloud config set project YOUR_PROJECT_ID
 
 # Configure application default credentials
 gcloud auth application-default login
@@ -53,8 +53,8 @@ gcloud auth application-default login
 - **Cost**: ~$123/month
 
 ### GCS Buckets
-- **JSONL**: `lennyisagoodboy-data-discovery-jsonl` (for Vertex AI Search)
-- **Reports**: `lennyisagoodboy-data-discovery-reports` (for human docs)
+- **JSONL**: `${PROJECT_ID}-data-discovery-jsonl` (for Vertex AI Search)
+- **Reports**: `${PROJECT_ID}-data-discovery-reports` (for human docs)
 - **Location**: Regional (`us-central1`)
 - **Cost**: ~$5-20/month (depends on data volume)
 
@@ -102,7 +102,7 @@ Type `yes` when prompted. Wait ~10 minutes for cluster creation.
 ```bash
 gcloud container clusters get-credentials data-discovery-cluster \
   --region us-central1 \
-  --project lennyisagoodboy
+  --project ${PROJECT_ID}
 ```
 
 ### 6. Set up Workload Identity
@@ -117,10 +117,10 @@ kubectl create serviceaccount metadata-writer -n data-discovery
 
 # Annotate with GCP service accounts
 kubectl annotate serviceaccount discovery-agent -n data-discovery \
-  iam.gke.io/gcp-service-account=data-discovery-agent@lennyisagoodboy.iam.gserviceaccount.com
+  iam.gke.io/gcp-service-account=data-discovery-agent@${PROJECT_ID}.iam.gserviceaccount.com
 
 kubectl annotate serviceaccount metadata-writer -n data-discovery \
-  iam.gke.io/gcp-service-account=data-discovery-metadata@lennyisagoodboy.iam.gserviceaccount.com
+  iam.gke.io/gcp-service-account=data-discovery-metadata@${PROJECT_ID}.iam.gserviceaccount.com
 ```
 
 ---
@@ -154,14 +154,14 @@ kubectl get serviceaccounts -n data-discovery
 ### Check Buckets
 
 ```bash
-gsutil ls -L gs://lennyisagoodboy-data-discovery-jsonl
-gsutil ls -L gs://lennyisagoodboy-data-discovery-reports
+gsutil ls -L gs://${PROJECT_ID}-data-discovery-jsonl
+gsutil ls -L gs://${PROJECT_ID}-data-discovery-reports
 ```
 
 ### Check Service Accounts
 
 ```bash
-gcloud iam service-accounts list --project=lennyisagoodboy
+gcloud iam service-accounts list --project=${PROJECT_ID}
 ```
 
 ### Test Workload Identity
@@ -174,7 +174,7 @@ kubectl run -it --rm --restart=Never test-pod \
   -- gcloud auth list
 ```
 
-Expected output: `data-discovery-agent@lennyisagoodboy.iam.gserviceaccount.com`
+Expected output: `data-discovery-agent@${PROJECT_ID}.iam.gserviceaccount.com`
 
 ---
 
@@ -222,7 +222,7 @@ kubectl get sa discovery-agent -n data-discovery -o yaml
 2. Verify IAM binding:
 ```bash
 gcloud iam service-accounts get-iam-policy \
-  data-discovery-agent@lennyisagoodboy.iam.gserviceaccount.com
+  data-discovery-agent@${PROJECT_ID}.iam.gserviceaccount.com
 ```
 
 Should show `roles/iam.workloadIdentityUser` for K8s SA.
@@ -237,7 +237,7 @@ gcloud auth application-default login
 # Reconnect to cluster
 gcloud container clusters get-credentials data-discovery-cluster \
   --region us-central1 \
-  --project lennyisagoodboy
+  --project ${PROJECT_ID}
 ```
 
 ---

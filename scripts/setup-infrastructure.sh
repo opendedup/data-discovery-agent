@@ -16,7 +16,7 @@ NC='\033[0m' # No Color
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 TERRAFORM_DIR="$PROJECT_ROOT/terraform"
-PROJECT_ID="${PROJECT_ID:-lennyisagoodboy}"
+PROJECT_ID="${PROJECT_ID:-$(gcloud config get-value project 2>/dev/null)}"
 REGION="${REGION:-us-central1}"
 
 # Functions
@@ -238,8 +238,8 @@ display_next_steps() {
     echo "   kubectl get namespaces"
     echo ""
     echo "2. Check GCS buckets:"
-    echo "   gsutil ls -L gs://lennyisagoodboy-data-discovery-jsonl"
-    echo "   gsutil ls -L gs://lennyisagoodboy-data-discovery-reports"
+    echo "   gsutil ls -L gs://${PROJECT_ID}-data-discovery-jsonl"
+    echo "   gsutil ls -L gs://${PROJECT_ID}-data-discovery-reports"
     echo ""
     echo "3. Verify service accounts:"
     echo "   gcloud iam service-accounts list --project=$PROJECT_ID"

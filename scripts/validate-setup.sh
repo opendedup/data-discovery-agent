@@ -13,11 +13,11 @@ BLUE='\033[0;34m'
 NC='\033[0m'
 
 # Configuration
-PROJECT_ID="${PROJECT_ID:-lennyisagoodboy}"
+PROJECT_ID="${PROJECT_ID:-$(gcloud config get-value project 2>/dev/null)}"
 REGION="${REGION:-us-central1}"
 CLUSTER_NAME="${CLUSTER_NAME:-data-discovery-cluster}"
-JSONL_BUCKET="lennyisagoodboy-data-discovery-jsonl"
-REPORTS_BUCKET="lennyisagoodboy-data-discovery-reports"
+JSONL_BUCKET="${PROJECT_ID}-data-discovery-jsonl"
+REPORTS_BUCKET="${PROJECT_ID}-data-discovery-reports"
 
 # Counters
 PASSED=0

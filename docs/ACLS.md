@@ -63,7 +63,8 @@ This document describes all service accounts, their IAM permissions, and the jus
 
 | Role | Justification |
 |------|---------------|
-| `roles/aiplatform.user` | Import documents from BigQuery and GCS into Vertex AI Search datastore. Used by the `import_to_vertex_ai_task` DAG task to trigger document ingestion. |
+| `roles/aiplatform.user` | Access Vertex AI Platform services. Required for AI Platform operations. |
+| `roles/discoveryengine.editor` | **Import documents** from BigQuery directly into Vertex AI Search datastore. Used by the `import_to_vertex_ai_task` DAG task to trigger document ingestion. Grants `discoveryengine.documents.import` permission. |
 
 #### Data Catalog Permissions
 
@@ -83,6 +84,12 @@ This document describes all service accounts, their IAM permissions, and the jus
 |------|---------------|
 | `roles/dataplex.viewer` | Read existing Dataplex metadata, data quality results, and lineage information. |
 | `roles/dataplex.dataScanAdmin` | **Create and run** data profile scans for comprehensive table profiling. Enables automated profiling of discovered tables using Dataplex's native capabilities (statistics, PII detection, data quality metrics). |
+
+#### Data Lineage Permissions
+
+| Role | Justification |
+|------|---------------|
+| `roles/datalineage.admin` | **Record data lineage** for BigQuery writes and GCS exports. Tracks data provenance by creating lineage processes, runs, and events in Data Catalog Lineage API. Essential for understanding data flow from source tables → discovered_assets table → markdown reports. |
 
 ### Security Considerations
 
@@ -221,6 +228,8 @@ The discovery service account (`data-discovery-agent@`) is **read-only** for sen
 
 | Date | Service Account | Change | Justification | Changed By |
 |------|----------------|--------|---------------|------------|
+| 2025-10-20 | `data-discovery-composer@` | Added `roles/discoveryengine.editor` | Import documents directly from BigQuery to Vertex AI Search datastore (bypassing JSONL) | Terraform |
+| 2025-10-20 | `data-discovery-composer@` | Added `roles/datalineage.admin` | Track data lineage for BigQuery writes and GCS exports using Data Catalog Lineage API | Terraform |
 | 2025-01-19 | `data-discovery-composer@` | Added `roles/bigquery.dataViewer` | SQL-based profiling requires reading table data for min/max/distinct calculations when Dataplex unavailable | Terraform |
 | 2025-01-19 | `data-discovery-composer@` | Added `roles/dataplex.dataScanAdmin` | Enable automated creation of Dataplex data profile scans for discovered tables | Terraform |
 | 2025-01-19 | All SAs | Initial creation | Bootstrap data discovery infrastructure | Terraform |
@@ -267,7 +276,7 @@ The discovery service account (`data-discovery-agent@`) is **read-only** for sen
 
 ---
 
-**Last Updated**: January 19, 2025  
+**Last Updated**: October 20, 2025  
 **Maintained By**: Infrastructure Team  
 **Review Cycle**: Quarterly
 

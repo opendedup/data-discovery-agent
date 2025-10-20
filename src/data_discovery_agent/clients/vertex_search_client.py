@@ -105,9 +105,9 @@ class VertexSearchClient:
         start_time = time.time()
         
         # Build filters from request
+        # Note: project_id is not supported in Vertex AI Search filters
+        # (the datastore is already scoped to a project)
         filters = {}
-        if request.project_id:
-            filters["project_id"] = request.project_id
         if request.dataset_id:
             filters["dataset_id"] = request.dataset_id
         if request.has_pii is not None:
@@ -193,6 +193,7 @@ class VertexSearchClient:
             pass
         
         # Execute with retry
+        logger.info("Calling Vertex AI Search API...")
         response = self.search_client.search(
             request=search_request,
             timeout=timeout,
@@ -203,6 +204,7 @@ class VertexSearchClient:
                 predicate=retry.if_exception_type(Exception),
             ),
         )
+        logger.info("Got response from Vertex AI Search API")
         
         return response
     
@@ -214,16 +216,22 @@ class VertexSearchClient:
     ) -> SearchResponse:
         """Parse API response into our SearchResponse model"""
         
+        logger.info("Parsing API response...")
         results = []
         total_count = 0
         next_page_token = None
         
+        logger.info("Iterating over response results...")
         for response_item in api_response.results:
             # Extract document
             document = response_item.document
             
             # Build AssetMetadata
-            struct_data = document.struct_data
+            struct_data = document.struct_data if hasattr(document, 'struct_data') else {}
+            # Handle None struct_data
+            if struct_data is None:
+                struct_data = {}
+            
             metadata = AssetMetadata(
                 id=document.id,
                 project_id=struct_data.get("project_id", self.project_id),
@@ -254,8 +262,17 @@ class VertexSearchClient:
             
             # Build full content if requested
             full_content = None
-            if request.include_full_content and document.content:
-                full_content = document.content.get("text", "")
+            if request.include_full_content and hasattr(document, 'content') and document.content:
+                content = document.content
+                # Handle protobuf Content object
+                if hasattr(content, 'raw_bytes') and content.raw_bytes:
+                    try:
+                        full_content = content.raw_bytes.decode('utf-8')
+                    except (AttributeError, UnicodeDecodeError):
+                        full_content = None
+                # Handle dict-like content
+                elif isinstance(content, dict):
+                    full_content = content.get("text", "")
             
             # Build console link
             console_link = self._build_console_link(metadata)
@@ -291,10 +308,31 @@ class VertexSearchClient:
         if hasattr(api_response, 'next_page_token'):
             next_page_token = api_response.next_page_token
         
+        # Build filters dict for response
+        filters_dict = {}
+        if request.project_id:
+            filters_dict["project_id"] = request.project_id
+        if request.dataset_id:
+            filters_dict["dataset_id"] = request.dataset_id
+        if request.has_pii is not None:
+            filters_dict["has_pii"] = request.has_pii
+        if request.has_phi is not None:
+            filters_dict["has_phi"] = request.has_phi
+        if request.environment:
+            filters_dict["environment"] = request.environment
+        if request.min_row_count:
+            filters_dict["min_row_count"] = request.min_row_count
+        if request.max_row_count:
+            filters_dict["max_row_count"] = request.max_row_count
+        if request.min_cost:
+            filters_dict["min_cost"] = request.min_cost
+        if request.max_cost:
+            filters_dict["max_cost"] = request.max_cost
+        
         # Build response
         return SearchResponse(
             query=request.query,
-            filters_applied=query_dict.get("filter", ""),
+            filters_applied=filters_dict,
             results=results,
             total_count=total_count,
             query_time_ms=0,  # Will be set by caller
@@ -309,14 +347,26 @@ class VertexSearchClient:
         
         # Try to get snippet from derived_struct_data
         if hasattr(response_item, 'derived_struct_data'):
-            snippets = response_item.derived_struct_data.get('snippets', [])
-            if snippets:
-                return snippets[0].get('snippet', '')
+            derived_data = response_item.derived_struct_data
+            if derived_data:
+                snippets = derived_data.get('snippets', [])
+                if snippets:
+                    return snippets[0].get('snippet', '')
         
         # Fallback to first 200 chars of content
-        if hasattr(response_item.document, 'content'):
-            text = response_item.document.content.get('text', '')
-            return text[:200] + "..." if len(text) > 200 else text
+        if hasattr(response_item, 'document') and hasattr(response_item.document, 'content'):
+            content = response_item.document.content
+            # Handle protobuf Content object
+            if hasattr(content, 'raw_bytes'):
+                try:
+                    text = content.raw_bytes.decode('utf-8') if content.raw_bytes else ''
+                    return text[:200] + "..." if len(text) > 200 else text
+                except (AttributeError, UnicodeDecodeError):
+                    pass
+            # Handle dict-like content
+            elif isinstance(content, dict):
+                text = content.get('text', '')
+                return text[:200] + "..." if len(text) > 200 else text
         
         return "No content available"
     

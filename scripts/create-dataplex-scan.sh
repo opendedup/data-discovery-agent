@@ -15,7 +15,7 @@ if [ -z "$PROJECT_ID" ] || [ -z "$DATASET_ID" ] || [ -z "$TABLE_ID" ]; then
     echo "Usage: $0 PROJECT_ID DATASET_ID TABLE_ID [LOCATION]"
     echo ""
     echo "Example:"
-    echo "  $0 lennyisagoodboy lfndata post_game_summaries us-central1"
+    echo "  $0 my-gcp-project lfndata post_game_summaries us-central1"
     exit 1
 fi
 

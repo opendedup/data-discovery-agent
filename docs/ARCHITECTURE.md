@@ -1,214 +1,486 @@
-### Finalized: The Dual-Mode Discovery Architecture
+# Data Discovery Agent Architecture
 
-This architecture creates a sophisticated, multi-agent data discovery system that is both powerful and practical. It solves the critical trade-off between data freshness, query performance, and operational cost by intelligently routing requests along two distinct paths: a high-speed, cached path powered by Vertex AI Search, and a real-time path using live agents.
+## Overview
 
-This design provides two primary interfaces to the data estate's metadata:
-1.  **The Library (Vertex AI Search):** A comprehensive, managed, and semantically searchable knowledge base. It contains a rich snapshot of the data estate's metadata, optimized for fast, analytical, and complex queries.
-2.  **The Field Agent (Live Agents):** On-demand specialists dispatched to get immediate, up-to-the-second answers for highly volatile or mission-critical questions.
+The Data Discovery Agent is a background indexing system that continuously discovers, catalogs, and makes BigQuery metadata searchable through Vertex AI Search. The system focuses on providing fast, semantic search over comprehensive metadata with rich markdown documentation.
+
+This architecture prioritizes:
+- **Background indexing** over live queries
+- **Cached, fast search** over real-time polling
+- **Semantic search** over exact matching
+- **Human-readable reports** alongside machine-readable data
 
 ---
 
-### Final Architectural Diagram
+## Architectural Diagram
 
 ```mermaid
-graph TD
-    subgraph "User Interaction"
-        A[User] -->|Natural Language Query| B{Orchestrator Agent (Smart Query Router)};
-    end
-
-    subgraph "Path 1: Cached Discovery (The Library)"
-        B --"Is query about stable/historical data?"--> C{Vertex AI Search API};
-        C -->|"search('customer PII', filter='data_source=bigquery')"| D[Managed Vertex AI Search Data Store];
-        D --"Grounded, relevant results with citations"--> C;
-        C -->|Fast, Comprehensive Answer| B;
-    end
-
-    subgraph "Path 2: Live Discovery (The Field Agent)"
-        B --"Is query about volatile/real-time data?"--> F{Live Agent};
-        F -->|GenAI Toolbox Tools + Custom Tools| G[GCP Client Wrappers];
-        G -->|Direct API Call| H[Live GCP APIs];
-        H --"Current State"--> G;
-        G --> F;
-        F -->|Up-to-the-minute Answer| B;
-    end
-
-    subgraph "Background Process: The Indexer & Reporter"
-        I[Cloud Scheduler] --triggers nightly/hourly--> J(Core Discovery Agents);
-        J -->|Rich, Structured Results| K{Data Aggregator};
+graph TB
+    subgraph "Background Indexer (Cloud Composer)"
+        A[Cloud Scheduler] -->|triggers @daily| B[metadata_collection_dag]
+        B --> C[collect_metadata_task]
+        C -->|2 threads| D[BigQueryCollector]
+        D -->|discovers| E[BigQuery APIs]
+        E -->|metadata| D
         
-        subgraph "Output for the Machine (The Library's Content)"
-            K --> L(Metadata Formatter);
-            L -->|Generates JSONL| M[Cloud Storage Bucket (for ingestion)];
-            M --triggers ingestion--> D;
-        end
-
-        subgraph "Output for Humans (Reports)"
-             K --> N(Report Generator);
-             N -->|Generates Markdown| O[Cloud Storage Bucket (for reports)];
-        end
+        C -->|XCom: assets| F[export_to_bigquery_task]
+        F --> G[BigQueryWriter]
+        G -->|writes with run_timestamp| H[(BigQuery: data_discovery.discovered_assets)]
+        
+        F -->|XCom: run_timestamp| I[export_markdown_reports_task]
+        C -->|XCom: assets| I
+        I --> J[MarkdownFormatter]
+        J -->|writes reports| K[GCS: reports/{run_timestamp}/]
+        
+        F -->|XCom: run_timestamp| L[import_to_vertex_ai_task]
+        L -->|triggers direct import| M[Vertex AI Search Client]
+        M -->|imports from BigQuery| N[Vertex AI Search Datastore]
+        H -->|source| N
     end
-
-    style J fill:#D1C4E9,stroke:#333
-    style I fill:#E0E0E0,stroke:#333
-    style B fill:#FFF9C4,stroke:#333
-    style D fill:#C8E6C9,stroke:#333
+    
+    subgraph "Query Interface (Future: MCP Service on GKE)"
+        O[MCP Server] -->|semantic search| N
+        N -->|results with metadata| O
+        O -->|fetch markdown reports| K
+        K -->|rich documentation| O
+        O -->|structured responses| P[Claude Desktop / Clients]
+    end
+    
+    subgraph "Local Testing (CLI)"
+        Q[CLI: discovery run] -->|same logic as DAG| D
+        Q -->|local testing| G
+        Q -->|local testing| J
+    end
+    
+    style B fill:#E1BEE7,stroke:#333
+    style N fill:#C8E6C9,stroke:#333
+    style O fill:#FFF9C4,stroke:#333
+    style H fill:#BBDEFB,stroke:#333
 ```
 
 ---
 
-### Component Breakdown & Data Flow
+## Component Breakdown
 
-#### 1. The "Indexer & Reporter" Subsystem (Background Process)
+### 1. Background Indexer System (Cloud Composer)
 
-This offline process is responsible for populating both the machine-readable library and human-readable reports.
+**Purpose**: Scheduled, comprehensive metadata discovery and indexing
 
-*   **Trigger & Execution:** A `Cloud Scheduler` job periodically runs the full suite of **Core Discovery Agents** (Schema, Cost, Lineage, Security, Governance, Glossary, Data Quality, etc.) to perform a comprehensive scan of the data estate.
-*   **Agent Specialization:** Each indexer agent focuses on a specific domain:
-    *   **Schema Indexer:** Uses `INFORMATION_SCHEMA` for efficient schema discovery
-    *   **Lineage Indexer:** Prioritizes Dataplex Data Lineage API with audit log fallback
-    *   **Security Indexer:** Discovers IAM policies, row/column-level security, policy tags
-    *   **Cost Indexer:** Analyzes historical costs, storage patterns, slot usage
-    *   **Governance Indexer:** Collects labels, tags, retention policies, DLP findings
-    *   **Glossary Indexer:** Uses LLM to generate rich descriptions and business terms
-    *   **Data Quality Indexer:** Integrates with Dataplex Data Quality for automated checks
-*   **Aggregation:** The results from all agents are collected by a **Data Aggregator**, which consolidates and normalizes the metadata.
-*   **Dual Output Generation (Parallel):**
-    1.  **For the Machine (Vertex AI Search):** The aggregated data is passed to the **Metadata Formatter**. This component transforms discovery results into **JSONL files** with two key parts:
-        *   `structData`: Filterable structured fields (project_id, has_pii, cost, timestamps, etc.)
-        *   `content`: Rich, semantically searchable text descriptions
-        These files are saved to a GCS bucket dedicated to ingestion.
-    2.  **For Humans (Reports):** The same aggregated data is simultaneously passed to the **Markdown Report Generator**. This component uses templates to create comprehensive **Markdown documentation** organized by asset type and discovery domain. These reports are saved to a separate GCS bucket for stakeholder access, code review, and audit purposes.
-*   **Ingestion:** The **Vertex AI Search Data Store** is configured to automatically watch the JSONL bucket and ingest new files, managing the entire pipeline of chunking, embedding, and indexing as a fully managed service.
-*   **Efficiency:** Both outputs are generated in a single discovery run, ensuring consistency and minimizing API calls to source systems.
+**Components**:
 
-#### 2. The "Orchestrator" Agent (The Smart Query Router)
+#### 1.1 Cloud Scheduler
+- Triggers the metadata collection DAG on a schedule (`@daily`, configurable)
+- Ensures regular updates to the metadata index
+- No catchup to avoid duplicate processing
 
-This is the central brain of the system and the primary user interface.
+#### 1.2 Metadata Collection DAG (`dags/metadata_collection_dag.py`)
+- Orchestrates the entire discovery and indexing pipeline
+- Task flow:
+  ```
+  collect_metadata
+      ↓
+  export_to_bigquery
+      ↓
+  ┌────────────────────┬─────────────────────┐
+  ↓                    ↓                     ↓
+  export_markdown    import_to_vertex_ai    (parallel)
+  ```
+- Uses XCom for data passing between tasks
+- All outputs share the same `run_timestamp` for correlation
 
-*   **Logic:** It uses an LLM to analyze the intent behind a user's query and determines the optimal strategy:
-    *   **Route to Cache (Vertex AI Search):** For questions about stable, historical, or summary information (e.g., schemas, lineage, cost trends, governance policies). This is the default path for most queries.
-    *   **Route to Live Agent:** For questions demanding real-time accuracy about volatile state (e.g., "does this user have access *right now*?", "what is the exact row count at this moment?").
-    *   **Decompose for Hybrid:** For complex queries, it breaks the request down, queries both the cache and live agents, and synthesizes the results into a single, cohesive answer.
+#### 1.3 BigQuery Collector (`src/data_discovery_agent/collectors/bigquery_collector.py`)
+- Discovers BigQuery metadata using multiple APIs:
+  - `INFORMATION_SCHEMA` for schemas and statistics
+  - Data Catalog API for tags and policy tags
+  - Dataplex API for data profiling scans
+  - DLP API for sensitive data findings
+- **Threading**: Uses `ThreadPoolExecutor` with 2 workers for parallel discovery
+- Outputs rich `BigQueryAssetSchema` objects
 
-#### 3. The "Live Agent" Subsystem (The Field Agent)
+#### 1.4 BigQuery Writer (`src/data_discovery_agent/writers/bigquery_writer.py`)
+- Writes discovered metadata to `data_discovery.discovered_assets` table
+- Creates dataset and table if they don't exist
+- Adds `run_timestamp` to all records for versioning
+- Schema includes:
+  - Asset identification (project, dataset, table)
+  - Schema information (columns, types)
+  - Statistics (row counts, size, last modified)
+  - Security (policy tags, DLP findings)
+  - Data quality (Dataplex scan results)
 
-These are lightweight, specialized agents designed for targeted, on-demand tasks.
+#### 1.5 Markdown Formatter (`src/data_discovery_agent/writers/markdown_formatter.py`)
+- Generates human-readable markdown reports from metadata
+- Organizes reports by: `{run_timestamp}/{project}/{dataset}/{table}.md`
+- Uploads to GCS reports bucket
+- Includes:
+  - Table overview and description
+  - Full schema with data types
+  - Security and governance information
+  - Data quality metrics
+  - Usage statistics
 
-*   **Scope:** They are not for discovery. They are equipped with a minimal set of tools that make fast, direct GCP API calls.
-*   **Purpose:** To provide guaranteed-fresh data for a specific resource when the cache is not sufficient.
-*   **Hybrid Tooling Approach:**
-    *   **GenAI Toolbox Integration:** Live agents leverage Google's pre-built GenAI Toolbox tools where appropriate:
-        *   `bigquery-get-table-info`: Quick table metadata retrieval
-        *   `bigquery-execute-sql`: Real-time analytical queries
-        *   Dataplex tools: Live lineage and quality checks
-    *   **Custom Tools:** For specialized operations:
-        *   Real-time IAM permission checks (`test_iam_permissions`)
-        *   Security-sensitive metadata queries
-        *   Cost and performance metrics requiring custom logic
-        *   Operations requiring read-only validation (SR-2A compliance)
-*   **Security:** All tools (GenAI Toolbox and custom) are audited to ensure read-only compliance with no source data modifications.
+#### 1.6 Vertex AI Search Client (`src/data_discovery_agent/clients/vertex_search_client.py`)
+- Triggers direct BigQuery → Vertex AI Search import
+- Uses the `import_documents` API with BigQuery source
+- No intermediate JSONL files needed (direct import)
+- Handles import job monitoring and error reporting
 
----
+### 2. Query Interface (Future: MCP Service)
 
-### Example Walkthroughs
+**Purpose**: Provide semantic search over discovered metadata
 
-*   **Query 1 (Cached): "Give me an overview of all tables tagged with PII."**
-    1.  **Orchestrator:** Decides this is stable data, perfect for the cache. Routes to **Vertex AI Search**.
-    2.  **Execution:** Calls the Search API: `search(query="tables with PII", filter="has_pii = true")`.
-    3.  **Result:** Instantly gets a list of relevant assets and their descriptions from the managed index, which is then formatted for the user.
+**Status**: Planned, not yet implemented
 
-*   **Query 2 (Live): "What is the status of the `daily_load_job`?"**
-    1.  **Orchestrator:** Decides job status is highly volatile. Routes to a **Live Agent**.
-    2.  **Execution:** A `LiveStatusAgent` is dispatched, which uses a `get_bigquery_job_status` tool to make a real-time API call.
-    3.  **Result:** Returns the current status (e.g., "RUNNING", "DONE").
+**Components**:
 
-*   **Query 3 (Hybrid): "Summarize the lineage for the `quarterly_sales` table and confirm its last update time."**
-    1.  **Orchestrator:** Decides this is a hybrid query.
-    2.  **Step 1 (Cached):** Queries Vertex AI Search for the `quarterly_sales` table to retrieve its detailed lineage description from the `content` field.
-    3.  **Step 2 (Live):** Dispatches a `LiveSchemaAgent` to call a `get_table_last_modified_time` tool for that specific table.
-    4.  **Step 3 (Synthesis):** The LLM combines the rich lineage context from the cache with the up-to-the-second timestamp from the live agent to provide a complete answer.
+#### 2.1 MCP Server
+- Model Context Protocol server deployed on GKE
+- Exposes tools for semantic metadata search
+- Key operations:
+  - `query_data_assets`: Semantic search over Vertex AI Search
+  - `get_table_details`: Fetch full markdown report from GCS
+  - `list_datasets`: Browse available datasets
+  - `get_data_lineage`: Query lineage information
 
-### Final Architectural Advantages
+#### 2.2 Vertex AI Search Integration
+- Queries the `data-discovery-metadata` datastore
+- Supports:
+  - Semantic search over descriptions and metadata
+  - Structured filtering (by project, dataset, tags, etc.)
+  - Faceted results
+  - Citation and source tracking
 
-*   **Optimal Performance & Cost:** Serves most queries (90%+) from a fast, cost-effective managed cache while reserving expensive live calls for when they are truly necessary.
-*   **Radical Simplicity:** Leverages a managed GCP service (Vertex AI Search) to handle the immense complexity of building and maintaining a RAG pipeline—no custom vector databases, embedding pipelines, or indexing infrastructure needed.
-*   **Powerful, Precise Search:** The JSONL ingestion format allows for a powerful combination of semantic search on text and exact filtering on structured metadata, enabling far more intelligent queries than pure vector search.
-*   **Dual-Purpose Output:** The system produces both machine-readable indexes for agents and human-readable Markdown reports for stakeholders, all from a single discovery run—maximizing efficiency and ensuring consistency.
-*   **Reliability & Freshness by Design:** Provides the speed of a cache for general queries and the guaranteed accuracy of live calls for critical ones, ensuring users can trust the results.
-*   **Accelerated Development:** Leverages Google's GenAI Toolbox for pre-built data source connectors, reducing development time while maintaining custom capabilities for specialized operations.
-*   **Enterprise-Grade Security:** Read-only by design with explicit metadata-only write constraints (SR-2A), comprehensive audit logging, and least-privilege service account architecture.
-*   **Extensibility:** Abstract base layer and plugin architecture enable seamless addition of new data sources (GCS, Cloud SQL, Spanner) without re-architecting the core system.
+#### 2.3 GCS Report Fetcher
+- Retrieves markdown reports from GCS for detailed views
+- Uses `run_timestamp` to ensure consistency
+- Provides rich, human-readable context
 
----
+### 3. Local Testing CLI
 
-### Architecture Principles
+**Purpose**: Test indexing logic locally without Cloud Composer
 
-**1. Read-Only First (SR-2A Compliance)**
-*   All discovery and indexing operations are strictly read-only to source systems
-*   No DDL (CREATE, ALTER, DROP) or DML (INSERT, UPDATE, DELETE) operations on data sources
-*   Write operations limited to metadata systems only (Data Catalog, resource labels)
-*   All metadata writes require explicit approval with preview and audit trail
+**Status**: Planned, not yet implemented
 
-**2. Cache-First with Live Fallback**
-*   Default to cached Vertex AI Search for 90%+ of queries (sub-second response)
-*   Use live agents only when data freshness is critical (permissions, current status)
-*   Hybrid mode intelligently combines both approaches for complex queries
+**Components**:
 
-**3. Separation of Concerns**
-*   **Background Indexers:** Comprehensive, scheduled discovery (nightly/hourly)
-*   **Live Agents:** Lightweight, targeted queries (on-demand)
-*   **Smart Router:** Intelligent query classification and orchestration
-*   Each component has a single, well-defined responsibility
+#### 3.1 CLI Entry Point (`src/data_discovery_agent/cli/main.py`)
+- Click/Typer-based CLI
+- Commands:
+  - `discovery run`: Execute full discovery locally
+  - `discovery export`: Export to BigQuery
+  - `discovery markdown`: Generate markdown reports
+  - `discovery import`: Import to Vertex AI Search
+  - `discovery test`: Validate configuration
 
-**4. Dual Output Generation**
-*   Every discovery run produces both machine-readable (JSONL) and human-readable (Markdown) outputs
-*   Ensures consistency between what agents search and what humans review
-*   Supports both automated workflows and manual audits
-
-**5. Extensible by Design**
-*   Abstract base classes for data sources, discovery interfaces, and metadata models
-*   Plugin registry system for adding new data sources at runtime
-*   Consistent patterns across all data source implementations
-*   Future sources (GCS, Cloud SQL) follow the same architectural blueprint
-
-**6. Hybrid Tooling Strategy**
-*   Leverage pre-built GenAI Toolbox tools where they provide value (speed, maintenance)
-*   Build custom tools for specialized, security-sensitive, or unique operations
-*   All tools (both sources) are audited for security compliance
-*   Best of both worlds: accelerated development + full control
-
-**7. Security in Depth**
-*   Application Default Credentials (ADC) for authentication
-*   Least-privilege service accounts (separate read-only and metadata-write accounts)
-*   Comprehensive audit logging of all operations
-*   Input validation and protection against injection attacks
-*   Regular security scanning of dependencies and infrastructure
+#### 3.2 Configuration
+- Uses same environment variables as DAG
+- Loads from `.env` file
+- Same task functions as Cloud Composer
 
 ---
 
-### Extensibility: Adding New Data Sources
+## Data Flow
 
-The architecture is designed for easy extension to additional data sources:
+### Discovery Pipeline
 
-**Example: Adding GCS Bucket Discovery**
+1. **Trigger**: Cloud Scheduler triggers the DAG daily
+2. **Discovery**: `collect_metadata_task` discovers BigQuery metadata (2 concurrent threads)
+3. **Export**: `export_to_bigquery_task` writes to BigQuery with `run_timestamp`
+4. **Parallel Processing**:
+   - **Path A**: `export_markdown_reports_task` generates reports → GCS
+   - **Path B**: `import_to_vertex_ai_task` imports BigQuery → Vertex AI Search
+5. **Indexing**: Vertex AI Search indexes the data for semantic search
 
-1.  **Implement Base Abstractions:** Create `GCSDataSource` extending the abstract `DataSource` class
-2.  **Create Indexer Agents:** Build GCS-specific indexer agents (object inventory, access logs, lifecycle policies)
-3.  **Create Live Agents:** Build lightweight live agents for real-time GCS operations
-4.  **Define JSONL Schema:** Extend the JSONL schema for GCS assets (bucket, object metadata)
-5.  **Register in System:** Add to data source registry for automatic discovery
-6.  **Leverage GenAI Toolbox:** Use pre-built GCS tools from GenAI Toolbox where available
-7.  **Single Vertex AI Search:** All data sources feed into the same unified search index
+### Query Pipeline (Future)
 
-The Smart Router automatically handles multi-source queries, filtering by `structData.data_source` field.
+1. **Query**: User asks question via MCP client (e.g., Claude Desktop)
+2. **Search**: MCP server queries Vertex AI Search for relevant assets
+3. **Enrich**: MCP server fetches markdown reports from GCS for details
+4. **Respond**: Structured response with citations and rich context
 
-**Future Data Sources:**
-*   Cloud SQL (schema discovery, query performance, replication status)
-*   AlloyDB (similar to Cloud SQL with specialized features)
-*   Spanner (global distribution, schema evolution)
-*   Cloud Storage (object metadata, lifecycle, access patterns)
-*   dbt (transformation lineage) - via custom integration
+---
 
-> **Note**: Looker integration disabled for initial deployment. Can be added later via GenAI Toolbox.
+## Key Design Decisions
 
-Each follows the same pattern: indexers → aggregator → dual output → unified search + specialized live agents.
+### 1. Direct BigQuery → Vertex AI Search Import
+
+**Decision**: Skip intermediate JSONL file generation
+
+**Rationale**:
+- Vertex AI Search supports direct BigQuery import
+- Reduces complexity (no GCS staging, no JSONL formatting)
+- Faster pipeline (one less step)
+- Easier to maintain (fewer moving parts)
+- Native BigQuery schema mapping
+
+**Trade-offs**:
+- Less control over indexing format
+- Relies on Vertex AI Search's BigQuery schema interpretation
+
+### 2. Separate Markdown Reports
+
+**Decision**: Generate human-readable markdown reports alongside BigQuery export
+
+**Rationale**:
+- Provides rich, formatted documentation for humans
+- Enables code review and audit workflows
+- MCP service can return detailed context beyond search results
+- Organized by `run_timestamp` for historical tracking
+
+### 3. Threading with Limited Concurrency
+
+**Decision**: Use 2 threads for BigQuery discovery
+
+**Rationale**:
+- Balance between speed and API quota limits
+- Composer worker has limited resources
+- Prevents rate limiting errors
+- Good enough for daily batch processing
+
+**Configuration**: Adjustable via `max_workers` parameter
+
+### 4. Cloud Composer for Orchestration
+
+**Decision**: Use Cloud Composer (managed Airflow) instead of Cloud Functions, Cloud Run, or custom orchestration
+
+**Rationale**:
+- Built-in scheduling, retries, and monitoring
+- Airflow's rich UI for debugging
+- XCom for task data passing
+- Environment variable management
+- Scales to complex multi-task workflows
+
+### 5. run_timestamp for Correlation
+
+**Decision**: Use shared `run_timestamp` across all outputs
+
+**Rationale**:
+- Links BigQuery records with corresponding GCS reports
+- Enables time-travel queries ("show me metadata as of X date")
+- Supports incremental processing and change detection
+- Audit trail for compliance
+
+**Format**: `YYYYMMDD_HHMMSS` (e.g., `20251019_143052`)
+
+### 6. Environment Variables for Configuration
+
+**Decision**: Use environment variables (via `.env` and Composer config) instead of hardcoded values
+
+**Rationale**:
+- Security: No credentials in code
+- Flexibility: Easy to change per environment
+- Follows 12-factor app principles
+- Composer natively supports environment variables
+
+**See**: `.env.example` for all configuration options
+
+---
+
+## Security Architecture
+
+### Service Accounts
+
+#### 1. Composer Service Account (`data-discovery-composer`)
+- **Purpose**: Run Composer environment and execute DAG tasks
+- **Permissions**:
+  - `composer.worker`: Manage Composer environment
+  - `bigquery.dataViewer`: Query BigQuery tables
+  - `bigquery.dataEditor`: Write to discovery dataset
+  - `bigquery.jobUser`: Execute BigQuery jobs
+  - `bigquery.metadataViewer`: Read table metadata
+  - `datacatalog.viewer`: Read Data Catalog tags
+  - `dataplex.viewer`: Read Dataplex metadata
+  - `dataplex.dataScanAdmin`: Create data profiling scans
+  - `dlp.reader`: Read DLP findings
+  - `aiplatform.user`: Use Vertex AI services
+  - `storage.objectAdmin`: Write to GCS buckets (scoped to specific buckets)
+  - `logging.logWriter`: Write logs
+  - `monitoring.metricWriter`: Write metrics
+
+#### 2. Discovery Service Account (`data-discovery-agent`)
+- **Purpose**: Future MCP service authentication
+- **Permissions**:
+  - `discoveryengine.viewer`: Query Vertex AI Search
+  - `storage.objectViewer`: Read markdown reports from GCS
+
+#### 3. Metadata Write Service Account (`data-discovery-metadata`)
+- **Purpose**: Future metadata enrichment (if needed)
+- **Permissions**: (Currently unused, reserved for future features)
+
+**See**: `docs/ACLS.md` for full permission documentation
+
+### Security Principles
+
+1. **Least Privilege**: Each service account has minimal permissions
+2. **Read-Only Discovery**: All discovery operations are read-only
+3. **Scoped Storage Access**: Storage permissions limited to specific buckets
+4. **No Source Data Access**: Only metadata, never actual table data
+5. **Audit Logging**: All operations logged to Cloud Logging
+
+---
+
+## Scalability & Performance
+
+### Current Scale
+- **Data Source**: BigQuery (single project, expandable to multi-project)
+- **Discovery Frequency**: Daily (configurable)
+- **Concurrency**: 2 threads
+- **Datastore Size**: ~18MB (50KB structured, 18MB unstructured)
+
+### Scaling Strategies
+
+#### Vertical Scaling
+- Increase Composer worker size (more CPU/memory)
+- Increase thread count for discovery (requires quota increases)
+- Use larger node types for GKE (future MCP service)
+
+#### Horizontal Scaling
+- Partition by project (separate DAG runs per project)
+- Parallel dataset processing (dynamic task generation)
+- Multi-region Composer environments
+
+#### Performance Optimization
+- Incremental discovery (only changed tables)
+- Caching of expensive API calls
+- Batch API requests where possible
+- Async/await for I/O-bound operations
+
+---
+
+## Monitoring & Observability
+
+### Cloud Composer Monitoring
+- Airflow UI: Task logs, execution history, DAG visualization
+- Cloud Logging: Structured logs from all tasks
+- Cloud Monitoring: DAG duration, success/failure rates
+
+### Custom Metrics
+- Number of tables discovered per run
+- Discovery duration per table
+- BigQuery export row counts
+- Vertex AI Search import status
+- Markdown report generation success rates
+
+### Alerting
+- DAG failure notifications
+- API quota exhaustion warnings
+- BigQuery export errors
+- Vertex AI Search import failures
+
+---
+
+## Future Enhancements
+
+### Phase 3: MCP Service Implementation
+- Implement MCP server with Vertex AI Search integration
+- Deploy to GKE cluster
+- Create Docker image and Kubernetes manifests
+- Build query tools for semantic search
+- Integrate markdown report fetching
+
+### Phase 4: Additional Data Sources
+- Cloud Storage (bucket metadata, lifecycle policies)
+- Cloud SQL (schema, query performance)
+- Spanner (global distribution, schema evolution)
+- Dataproc (cluster metadata, job history)
+
+### Phase 5: Advanced Features
+- Gemini-powered description generation
+- Change detection and notifications
+- Data lineage visualization
+- Cost optimization recommendations
+- Automated data quality rules
+- Custom metadata enrichment workflows
+
+### Phase 6: Testing & Documentation
+- Comprehensive unit tests (pytest)
+- Integration tests with real GCP resources
+- Local CLI for development and testing
+- API documentation
+- User guides and tutorials
+
+---
+
+## Technology Stack
+
+### Core Infrastructure
+- **Cloud Composer 3**: Managed Airflow for orchestration
+- **Vertex AI Search**: Semantic search over metadata
+- **BigQuery**: Structured metadata storage
+- **Cloud Storage**: Markdown report storage
+- **GKE**: Future MCP service deployment
+
+### Python Libraries
+- `google-cloud-bigquery`: BigQuery client
+- `google-cloud-datacatalog`: Data Catalog client
+- `google-cloud-dataplex`: Dataplex client
+- `google-cloud-dlp`: DLP client
+- `google-cloud-discoveryengine`: Vertex AI Search client
+- `google-cloud-storage`: GCS client
+- `pydantic`: Data validation and schemas
+- `python-dotenv`: Environment variable management
+
+### Development Tools
+- **Poetry/uv**: Dependency management
+- **Ruff**: Code formatting and linting
+- **pytest**: Testing framework
+- **Terraform**: Infrastructure as code
+
+---
+
+## Configuration Management
+
+All configuration is managed through environment variables:
+
+### Required Variables
+- `GCP_PROJECT_ID`: GCP project ID
+- `GCS_JSONL_BUCKET`: JSONL staging bucket (legacy, unused)
+- `GCS_REPORTS_BUCKET`: Markdown reports bucket
+- `VERTEX_DATASTORE_ID`: Vertex AI Search datastore ID
+- `VERTEX_LOCATION`: Vertex AI location (usually `global`)
+- `BQ_DATASET`: BigQuery dataset for metadata
+- `BQ_TABLE`: BigQuery table name
+- `BQ_LOCATION`: BigQuery location
+
+### Optional Variables
+- `LOG_LEVEL`: Logging verbosity (default: `INFO`)
+- `GOOGLE_API_KEY`: API key for Google services
+- `GEMINI_API_KEY`: Gemini API key (future use)
+
+**See**: `.env.example` for complete list and descriptions
+
+---
+
+## Development Workflow
+
+1. **Local Development**:
+   - Clone repository
+   - Copy `.env.example` to `.env` and configure
+   - Install dependencies: `uv sync`
+   - Run tests: `pytest tests/`
+
+2. **Testing**:
+   - Unit tests: `pytest tests/unit/`
+   - Integration tests: `pytest tests/integration/`
+   - Local CLI testing: `discovery run` (future)
+
+3. **Deployment**:
+   - Infrastructure: `cd terraform && terraform apply`
+   - DAG deployment: Upload `dags/` to Composer DAGs bucket
+   - Code deployment: Package installed in Composer environment
+
+4. **Monitoring**:
+   - Check Airflow UI for task status
+   - View logs in Cloud Logging
+   - Query `data_discovery.discovered_assets` in BigQuery
+   - Browse markdown reports in GCS
+
+---
+
+## Related Documentation
+
+- **[ACLS.md](./ACLS.md)**: Complete IAM permissions and justifications
+- **[../terraform/README.md](../terraform/README.md)**: Infrastructure setup guide
+- **[../.env.example](../.env.example)**: Environment variable reference
+- **[../README.md](../README.md)**: Project overview and quick start
+- **[../.cursor/plans/bigquery-discovery-mcp-beb6d83e.plan.md](../.cursor/plans/bigquery-discovery-mcp-beb6d83e.plan.md)**: Detailed project plan

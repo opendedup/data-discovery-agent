@@ -3,19 +3,21 @@
 
 # GCP Project Configuration
 project_id = "YOUR_PROJECT_ID"
-region     = "us-central1"
+region     = "YOUR_REGION"
 
 # Network Configuration (existing Shared VPC)
 # Replace with your VPC network and subnet paths
 # Or use "default" for default VPC
 network    = "projects/YOUR_HOST_PROJECT_ID/global/networks/YOUR_NETWORK_NAME"
-subnetwork = "projects/YOUR_HOST_PROJECT_ID/regions/us-central1/subnetworks/YOUR_SUBNET_NAME"
+subnetwork = "projects/YOUR_HOST_PROJECT_ID/regions/YOUR_REGION/subnetworks/YOUR_SUBNET_NAME"
 
 # For default VPC, use:
 # network    = "default"
 # subnetwork = "default"
 
 # GKE Cluster Configuration
+# Set enable_gke to false to skip GKE deployment (useful for Composer-only setups)
+enable_gke         = false
 cluster_name       = "data-discovery-cluster"
 machine_type       = "e2-standard-2"
 initial_node_count = 2
@@ -35,4 +37,9 @@ vertex_location     = "global"
 bq_dataset          = "data_discovery"
 bq_table            = "discovered_assets"
 bq_location         = "US"
+
+# Data Lineage Configuration
+# Enable Data Catalog Lineage tracking to record data provenance
+lineage_enabled  = true
+lineage_location = "YOUR_REGION"  # Should match your main region (defaults to region if not specified)
 

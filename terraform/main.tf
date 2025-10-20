@@ -3,22 +3,24 @@
 
 # Enable required GCP APIs
 resource "google_project_service" "required_apis" {
-  for_each = toset([
-    "container.googleapis.com",           # GKE
-    "storage.googleapis.com",             # Cloud Storage
-    "iam.googleapis.com",                 # IAM
-    "secretmanager.googleapis.com",       # Secret Manager
-    "cloudscheduler.googleapis.com",      # Cloud Scheduler
-    "bigquery.googleapis.com",            # BigQuery
-    "datacatalog.googleapis.com",         # Data Catalog
-    "logging.googleapis.com",             # Cloud Logging
-    "monitoring.googleapis.com",          # Cloud Monitoring
-    "dlp.googleapis.com",                 # DLP
-    "aiplatform.googleapis.com",          # Vertex AI
-    "compute.googleapis.com",             # Compute (for networking)
-    "dataplex.googleapis.com",            # Dataplex (for lineage and data quality)
-    "composer.googleapis.com",            # Cloud Composer
-  ])
+  for_each = toset(concat(
+    [
+      "storage.googleapis.com",        # Cloud Storage
+      "iam.googleapis.com",            # IAM
+      "secretmanager.googleapis.com",  # Secret Manager
+      "cloudscheduler.googleapis.com", # Cloud Scheduler
+      "bigquery.googleapis.com",       # BigQuery
+      "datacatalog.googleapis.com",    # Data Catalog
+      "logging.googleapis.com",        # Cloud Logging
+      "monitoring.googleapis.com",     # Cloud Monitoring
+      "dlp.googleapis.com",            # DLP
+      "aiplatform.googleapis.com",     # Vertex AI
+      "compute.googleapis.com",        # Compute (for networking)
+      "dataplex.googleapis.com",       # Dataplex (for lineage and data quality)
+      "composer.googleapis.com",       # Cloud Composer
+    ],
+    var.enable_gke ? ["container.googleapis.com"] : [] # GKE (optional)
+  ))
 
   project = var.project_id
   service = each.key
@@ -28,12 +30,13 @@ resource "google_project_service" "required_apis" {
 
 # GKE Cluster with Workload Identity and Private Nodes
 resource "google_container_cluster" "data_discovery" {
+  count    = var.enable_gke ? 1 : 0
   name     = var.cluster_name
   location = var.region
 
   # Use regional cluster for high availability
   # Standard mode (not Autopilot) for custom machine types
-  
+
   # Network configuration - using existing VPC and subnet
   network    = var.network
   subnetwork = var.subnetwork
@@ -41,7 +44,7 @@ resource "google_container_cluster" "data_discovery" {
   # Remove default node pool immediately (we'll create a custom one)
   remove_default_node_pool = true
   initial_node_count       = 1
-  
+
   # Temporarily disable deletion protection to allow cluster recreation
   deletion_protection = false
 
@@ -53,8 +56,8 @@ resource "google_container_cluster" "data_discovery" {
   # Private cluster configuration - no external IPs for nodes
   private_cluster_config {
     enable_private_nodes    = true
-    enable_private_endpoint = false  # Keep master endpoint public for easier management
-    master_ipv4_cidr_block  = "172.20.0.0/28"  # Private IP range for master (avoiding reserved ranges)
+    enable_private_endpoint = false           # Keep master endpoint public for easier management
+    master_ipv4_cidr_block  = "172.20.0.0/28" # Private IP range for master (avoiding reserved ranges)
   }
 
   # IP allocation for pods and services
@@ -87,7 +90,7 @@ resource "google_container_cluster" "data_discovery" {
   # Maintenance window (optional - adjust as needed)
   maintenance_policy {
     daily_maintenance_window {
-      start_time = "03:00"  # 3 AM maintenance window
+      start_time = "03:00" # 3 AM maintenance window
     }
   }
 
@@ -98,10 +101,11 @@ resource "google_container_cluster" "data_discovery" {
 
 # Custom node pool with e2-standard-2 instances
 resource "google_container_node_pool" "primary_nodes" {
-  name       = "${var.cluster_name}-node-pool"
-  location   = var.region
-  cluster    = google_container_cluster.data_discovery.name
-  
+  count    = var.enable_gke ? 1 : 0
+  name     = "${var.cluster_name}-node-pool"
+  location = var.region
+  cluster  = google_container_cluster.data_discovery[0].name
+
   initial_node_count = var.initial_node_count
 
   # Autoscaling configuration
@@ -117,8 +121,8 @@ resource "google_container_node_pool" "primary_nodes" {
     disk_type    = "pd-standard"
 
     # Use custom service account with minimal permissions
-    service_account = google_service_account.gke_sa.email
-    
+    service_account = google_service_account.gke_sa[0].email
+
     oauth_scopes = [
       "https://www.googleapis.com/auth/cloud-platform"
     ]

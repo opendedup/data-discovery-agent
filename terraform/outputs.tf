@@ -1,23 +1,23 @@
 output "cluster_name" {
   description = "Name of the GKE cluster"
-  value       = google_container_cluster.data_discovery.name
+  value       = var.enable_gke ? google_container_cluster.data_discovery[0].name : null
 }
 
 output "cluster_endpoint" {
   description = "Endpoint for GKE cluster"
-  value       = google_container_cluster.data_discovery.endpoint
+  value       = var.enable_gke ? google_container_cluster.data_discovery[0].endpoint : null
   sensitive   = true
 }
 
 output "cluster_ca_certificate" {
   description = "CA certificate for GKE cluster"
-  value       = google_container_cluster.data_discovery.master_auth[0].cluster_ca_certificate
+  value       = var.enable_gke ? google_container_cluster.data_discovery[0].master_auth[0].cluster_ca_certificate : null
   sensitive   = true
 }
 
 output "cluster_location" {
   description = "Location of the GKE cluster"
-  value       = google_container_cluster.data_discovery.location
+  value       = var.enable_gke ? google_container_cluster.data_discovery[0].location : null
 }
 
 output "jsonl_bucket_name" {
@@ -42,11 +42,11 @@ output "metadata_write_service_account_email" {
 
 output "gke_service_account_email" {
   description = "Email of the GKE service account"
-  value       = google_service_account.gke_sa.email
+  value       = var.enable_gke ? google_service_account.gke_sa[0].email : null
 }
 
 output "kubectl_connection_command" {
   description = "Command to configure kubectl"
-  value       = "gcloud container clusters get-credentials ${google_container_cluster.data_discovery.name} --region ${var.region} --project ${var.project_id}"
+  value       = var.enable_gke ? "gcloud container clusters get-credentials ${google_container_cluster.data_discovery[0].name} --region ${var.region} --project ${var.project_id}" : "GKE is disabled"
 }
 

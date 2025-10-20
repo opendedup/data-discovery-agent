@@ -8,7 +8,7 @@ process, designed to be called by an Airflow DAG.
 import logging
 import os
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from data_discovery_agent.collectors import BigQueryCollector
@@ -16,8 +16,10 @@ from data_discovery_agent.search import MetadataFormatter, MarkdownFormatter
 from data_discovery_agent.search.jsonl_schema import BigQueryAssetSchema
 from data_discovery_agent.clients import VertexSearchClient
 from data_discovery_agent.writers.bigquery_writer import BigQueryWriter
+from data_discovery_agent.utils.lineage import record_lineage, format_bigquery_fqn
 
 logger = logging.getLogger(__name__)
+
 
 def collect_metadata_task(**context: Any) -> None:
     """
@@ -167,76 +169,125 @@ def export_markdown_reports_task(**context: Any) -> None:
     Configuration is read from environment variables (set in Composer),
     with optional overrides from dag_run.conf for manual runs.
     
+    Records lineage showing data flow from discovered BigQuery tables to GCS markdown files.
+    
     Args:
         **context: Airflow context with dag_run and task instance info
         
     Raises:
         ValueError: If required environment variables are missing
     """
-    # Get configuration from environment variables (primary source)
-    project_id = os.getenv('GCP_PROJECT_ID')
-    reports_bucket = os.getenv('GCS_REPORTS_BUCKET')
+    # Track start time for lineage
+    start_time = datetime.now(timezone.utc)
+    is_success = False
+    source_tables = []
+    gcs_uris = []
     
-    if not project_id:
-        raise ValueError("GCP_PROJECT_ID environment variable is required")
-    if not reports_bucket:
-        raise ValueError("GCS_REPORTS_BUCKET environment variable is required")
+    # Get configuration early for finally block
+    project_id = os.getenv('GCP_PROJECT_ID', '')
+    lineage_location = os.getenv('LINEAGE_LOCATION', 'us-central1')
     
-    # Allow manual override via dag_run.conf for testing/manual runs
-    args = context.get('dag_run', {}).conf if context.get('dag_run') else {}
-    conf_args = args.get('markdown_args', {}) if args else {}
-    
-    # Get assets from XCom
-    asset_dicts = context['ti'].xcom_pull(key='assets', task_ids='collect_metadata')
-    
-    # Get run_timestamp from BigQuery export task (or generate if not available)
-    run_timestamp = context['ti'].xcom_pull(key='run_timestamp', task_ids='export_to_bigquery')
-    if not run_timestamp:
-        # Fallback: generate timestamp if BigQuery task didn't run or failed
-        run_timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-        logger.warning(f"No run_timestamp from BigQuery export, using generated: {run_timestamp}")
-    
-    if not asset_dicts:
-        logger.warning("No assets to generate markdown reports for.")
-        return
-    
-    logger.info(f"Starting Markdown report generation for {len(asset_dicts)} assets.")
-    logger.info(f"Using run_timestamp: {run_timestamp}")
-    
-    # Initialize formatter
-    formatter = MarkdownFormatter(project_id=project_id)
-    
-    # Generate and upload reports
-    reports_generated = 0
-    for asset_dict in asset_dicts:
-        try:
-            # Convert dict back to BigQueryAssetSchema
-            asset = BigQueryAssetSchema(**asset_dict)
-            
-            # Generate markdown report
-            markdown = formatter.generate_table_report(asset)
-            
-            # Construct GCS path
-            table_id = asset.struct_data.table_id
-            dataset_id = asset.struct_data.dataset_id
-            project = asset.struct_data.project_id
-            gcs_path = f"reports/{run_timestamp}/{project}/{dataset_id}/{table_id}.md"
-            
-            # Upload to GCS
-            gcs_uri = formatter.export_to_gcs(
-                markdown=markdown,
-                gcs_bucket=reports_bucket,
-                gcs_path=gcs_path
-            )
-            
-            reports_generated += 1
-            
-            if reports_generated % 10 == 0:
-                logger.info(f"Generated {reports_generated}/{len(asset_dicts)} reports...")
+    try:
+        # Get full configuration from environment variables (primary source)
+        reports_bucket = os.getenv('GCS_REPORTS_BUCKET')
+        
+        if not project_id:
+            raise ValueError("GCP_PROJECT_ID environment variable is required")
+        if not reports_bucket:
+            raise ValueError("GCS_REPORTS_BUCKET environment variable is required")
+        
+        # Allow manual override via dag_run.conf for testing/manual runs
+        args = context.get('dag_run', {}).conf if context.get('dag_run') else {}
+        conf_args = args.get('markdown_args', {}) if args else {}
+        
+        # Get assets from XCom
+        asset_dicts = context['ti'].xcom_pull(key='assets', task_ids='collect_metadata')
+        
+        # Get run_timestamp from BigQuery export task (or generate if not available)
+        run_timestamp = context['ti'].xcom_pull(key='run_timestamp', task_ids='export_to_bigquery')
+        if not run_timestamp:
+            # Fallback: generate timestamp if BigQuery task didn't run or failed
+            run_timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+            logger.warning(f"No run_timestamp from BigQuery export, using generated: {run_timestamp}")
+        
+        if not asset_dicts:
+            logger.warning("No assets to generate markdown reports for.")
+            return
+        
+        logger.info(f"Starting Markdown report generation for {len(asset_dicts)} assets.")
+        logger.info(f"Using run_timestamp: {run_timestamp}")
+        
+        # Initialize formatter
+        formatter = MarkdownFormatter(project_id=project_id)
+        
+        # Generate and upload reports
+        reports_generated = 0
+        for asset_dict in asset_dicts:
+            try:
+                # Convert dict back to BigQueryAssetSchema
+                asset = BigQueryAssetSchema(**asset_dict)
                 
-        except Exception as e:
-            logger.error(f"Failed to generate report for asset {asset_dict.get('id', 'unknown')}: {e}")
-            continue
-    
-    logger.info(f"Finished Markdown report generation. Generated {reports_generated}/{len(asset_dicts)} reports.")
-    logger.info(f"Reports available in gs://{reports_bucket}/reports/{run_timestamp}/")
+                # Generate markdown report
+                markdown = formatter.generate_table_report(asset)
+                
+                # Construct GCS path
+                table_id = asset.struct_data.table_id
+                dataset_id = asset.struct_data.dataset_id
+                project = asset.struct_data.project_id
+                gcs_path = f"reports/{run_timestamp}/{project}/{dataset_id}/{table_id}.md"
+                
+                # Upload to GCS
+                gcs_uri = formatter.export_to_gcs(
+                    markdown=markdown,
+                    gcs_bucket=reports_bucket,
+                    gcs_path=gcs_path
+                )
+                
+                # Track for lineage
+                table_full_name = f"{project}.{dataset_id}.{table_id}"
+                source_tables.append(table_full_name)
+                gcs_uris.append(gcs_uri)
+                
+                reports_generated += 1
+                
+                if reports_generated % 10 == 0:
+                    logger.info(f"Generated {reports_generated}/{len(asset_dicts)} reports...")
+                    
+            except Exception as e:
+                logger.error(f"Failed to generate report for asset {asset_dict.get('id', 'unknown')}: {e}")
+                continue
+        
+        logger.info(f"Finished Markdown report generation. Generated {reports_generated}/{len(asset_dicts)} reports.")
+        logger.info(f"Reports available in gs://{reports_bucket}/reports/{run_timestamp}/")
+        
+        # Mark success
+        is_success = True
+        
+    finally:
+        # Record lineage regardless of success/failure
+        end_time = datetime.now(timezone.utc)
+        if project_id and source_tables and gcs_uris:
+            dag_id = context.get('dag', {}).dag_id if context.get('dag') else 'metadata_collection'
+            task_id = context.get('task', {}).task_id if context.get('task') else 'export_markdown_reports'
+            
+            # Build source-target pairs for lineage (BigQuery tables → GCS markdown files)
+            source_targets = []
+            for i, source_table in enumerate(source_tables):
+                if i < len(gcs_uris) and '.' in source_table:
+                    source_fqn = format_bigquery_fqn(*source_table.split('.'))
+                    target_fqn = gcs_uris[i]
+                    source_targets.append((source_fqn, target_fqn))
+            
+            record_lineage(
+                project_id=project_id,
+                location=lineage_location,
+                process_name=dag_id,
+                task_id=task_id,
+                source_targets=source_targets,
+                start_time=start_time,
+                end_time=end_time,
+                is_success=is_success,
+                source_system="bigquery",
+                source_type="report_generation",
+                extraction_method="markdown_export"
+            )

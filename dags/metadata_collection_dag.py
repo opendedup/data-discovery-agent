@@ -8,7 +8,7 @@ from airflow.operators.python import PythonOperator  # type: ignore
 # Add src to path to allow for absolute imports of the agent modules
 import sys
 from pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 from data_discovery_agent.orchestration.tasks import (
     collect_metadata_task,

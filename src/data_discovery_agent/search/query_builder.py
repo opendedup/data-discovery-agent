@@ -217,10 +217,11 @@ class SearchQueryBuilder:
                 filter_parts.append(f'{field}="{value}"')
         
         # Boolean filters
+        # Vertex AI Search expects: field="true" or field="false" (as strings with quotes)
         for field in ["has_pii", "has_phi"]:
             if field in filters:
                 value = "true" if filters[field] else "false"
-                filter_parts.append(f"{field}={value}")
+                filter_parts.append(f'{field}="{value}"')
         
         # Numeric filters with operators
         for key, value in filters.items():
@@ -361,7 +362,9 @@ class SearchQueryBuilder:
 
 # Example usage and testing
 if __name__ == "__main__":
-    builder = SearchQueryBuilder(project_id="lennyisagoodboy")
+    import os
+    project_id = os.getenv('GCP_PROJECT_ID', os.getenv('PROJECT_ID', 'your-project-id'))
+    builder = SearchQueryBuilder(project_id=project_id)
     
     # Test queries
     test_queries = [

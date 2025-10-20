@@ -1,0 +1,13 @@
+# =============================================================================
+# Kubernetes Namespace for MCP Service
+# =============================================================================
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: data-discovery
+  labels:
+    app: data-discovery-agent
+    component: mcp-service
+    environment: production
+

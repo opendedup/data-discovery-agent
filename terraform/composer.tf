@@ -15,7 +15,7 @@ resource "google_composer_environment" "data_discovery_agent" {
   config {
     software_config {
       image_version = var.composer_image_version
-      
+
       # Environment variables for DAGs to access configuration
       env_variables = {
         GCP_PROJECT_ID      = var.project_id
@@ -27,21 +27,25 @@ resource "google_composer_environment" "data_discovery_agent" {
         BQ_TABLE            = var.bq_table
         BQ_LOCATION         = var.bq_location
         ENVIRONMENT         = var.environment
+        LINEAGE_ENABLED     = tostring(var.lineage_enabled)
+        LINEAGE_LOCATION    = var.lineage_location != "" ? var.lineage_location : var.region
       }
-      
+
       # Install PyPI packages required by the discovery agent.
-      # This list should be kept in sync with pyproject.toml
+      # Note: google-adk removed due to sqlalchemy conflict with Airflow 2.10.5
       pypi_packages = {
-        "google-cloud-aiplatform"   = ""
-        "google-cloud-bigquery"     = ""
-        "google-cloud-storage"      = ""
-        "google-generativeai"       = ""
-        "python-dotenv"             = ""
-        "pydantic"                  = ""
-        "google-cloud-datacatalog"  = ""
-        "google-cloud-dlp"          = ""
-        "google-cloud-logging"      = ""
-        "google-cloud-monitoring"   = ""
+        "google-cloud-aiplatform"          = ""
+        "google-cloud-bigquery"            = ""
+        "google-cloud-storage"             = ""
+        "google-cloud-discoveryengine"     = ""
+        "google-cloud-datacatalog"         = ""
+        "google-cloud-datacatalog-lineage" = ""
+        "google-cloud-dataplex"            = ""
+        "google-cloud-dlp"                 = ""
+        "google-generativeai"              = ""
+        "python-dotenv"                    = ""
+        "pydantic"                         = ""
+        "pandas"                           = ""
       }
     }
 

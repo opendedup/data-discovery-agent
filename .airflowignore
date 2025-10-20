@@ -1,0 +1,15 @@
+# Airflow will ignore files matching these patterns when scanning for DAGs
+# This prevents Airflow from trying to parse non-DAG Python files
+
+# Ignore the src directory - it contains library code, not DAGs
+src/
+
+# Ignore common non-DAG files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.git/
+.pytest_cache/
+*.egg-info/
+

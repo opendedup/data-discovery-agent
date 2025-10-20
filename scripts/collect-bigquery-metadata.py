@@ -207,8 +207,8 @@ def main():
     # Collection options
     parser.add_argument(
         '--project',
-        default='lennyisagoodboy',
-        help='GCP project ID (default: lennyisagoodboy)'
+        default=os.getenv('GCP_PROJECT_ID', os.getenv('PROJECT_ID', '')),
+        help='GCP project ID (default: from GCP_PROJECT_ID or PROJECT_ID env var)'
     )
     parser.add_argument(
         '--projects',
@@ -271,13 +271,13 @@ def main():
     )
     parser.add_argument(
         '--gcs-bucket',
-        default='lennyisagoodboy-data-discovery-jsonl',
-        help='GCS bucket for JSONL export'
+        default=os.getenv('GCS_JSONL_BUCKET', f"{os.getenv('GCP_PROJECT_ID', os.getenv('PROJECT_ID', ''))}-data-discovery-jsonl"),
+        help='GCS bucket for JSONL export (default: ${PROJECT_ID}-data-discovery-jsonl)'
     )
     parser.add_argument(
         '--reports-bucket',
-        default='lennyisagoodboy-data-discovery-reports',
-        help='GCS bucket for Markdown reports'
+        default=os.getenv('GCS_REPORTS_BUCKET', f"{os.getenv('GCP_PROJECT_ID', os.getenv('PROJECT_ID', ''))}-data-discovery-reports"),
+        help='GCS bucket for Markdown reports (default: ${PROJECT_ID}-data-discovery-reports)'
     )
     parser.add_argument(
         '--skip-gcs',

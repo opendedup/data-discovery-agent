@@ -70,6 +70,12 @@ variable "environment" {
   default     = "dev"
 }
 
+variable "enable_gke" {
+  description = "Enable GKE cluster deployment. Set to false to skip GKE resources."
+  type        = bool
+  default     = true
+}
+
 variable "composer_env_name" {
   description = "Name of the Cloud Composer environment"
   type        = string
@@ -116,5 +122,18 @@ variable "bq_location" {
   description = "BigQuery dataset location"
   type        = string
   default     = "US"
+}
+
+# Data Lineage Configuration
+variable "lineage_enabled" {
+  description = "Enable or disable Data Catalog Lineage tracking"
+  type        = bool
+  default     = true
+}
+
+variable "lineage_location" {
+  description = "GCP region for Data Catalog Lineage API (should match your main region)"
+  type        = string
+  default     = "" # Empty string means use var.region
 }
 

@@ -5,21 +5,23 @@ This directory contains Terraform configuration for deploying the Data Discovery
 ## Architecture Overview
 
 The infrastructure includes:
-- **GKE Cluster**: Standard mode cluster with Workload Identity, private nodes (no external IPs)
+- **GKE Cluster** (optional): Standard mode cluster with Workload Identity, private nodes (no external IPs)
+- **Cloud Composer**: Managed Airflow environment for orchestrating data discovery workflows
 - **GCS Buckets**: Regional buckets for JSONL files (Vertex AI Search) and Markdown reports
 - **Service Accounts**: Least-privilege accounts for discovery (read-only) and metadata writes
 - **Monitoring**: Cloud Monitoring dashboards and alerts
 - **Secrets**: Secret Manager for sensitive configuration
 
+> **Note**: GKE deployment is optional. Set `enable_gke = false` in `terraform.tfvars` to skip GKE and use Cloud Composer only.
+
 ## Prerequisites
 
-1. **GCP Project**: Active GCP project (`lennyisagoodboy`)
+1. **GCP Project**: Active GCP project (set via `PROJECT_ID` environment variable or in `terraform.tfvars`)
 2. **Terraform**: Version >= 1.5.0
 3. **gcloud CLI**: Authenticated and configured
 4. **Permissions**: Owner or Editor role on the project (for initial setup)
-5. **Existing Network**: VPC and subnet already configured
-   - Network: `projects/hazel-goal-319318/global/networks/ula`
-   - Subnet: `projects/hazel-goal-319318/regions/us-central1/subnetworks/ula`
+5. **Existing Network**: VPC and subnet already configured (or use "default")
+   - Configure network settings in `terraform.tfvars`
 
 ## Quick Start
 
@@ -32,6 +34,12 @@ cd terraform
 cp terraform.tfvars.example terraform.tfvars
 # Edit terraform.tfvars if you need to change any defaults
 ```
+
+**Key Configuration Options:**
+- `enable_gke`: Set to `false` to skip GKE deployment (defaults to `true`)
+- `project_id`: Your GCP project ID
+- `vertex_datastore_id`: Required - your Vertex AI Search datastore ID
+- Network settings: Use existing VPC or "default"
 
 ### 2. Initialize Terraform
 
@@ -55,20 +63,21 @@ terraform apply
 
 Review the changes and type `yes` to proceed. This will:
 - Enable required GCP APIs
-- Create the GKE cluster with 2 nodes (can scale to 5)
+- Create Cloud Composer environment for Airflow orchestration
+- (Optional) Create the GKE cluster with 2 nodes (can scale to 5) if `enable_gke = true`
 - Create GCS buckets for JSONL and reports
 - Create service accounts with appropriate IAM roles
-- Configure Workload Identity bindings
+- (Optional) Configure Workload Identity bindings if GKE is enabled
 - Set up monitoring and logging
 
-### 5. Connect to the Cluster
+### 5. Connect to the Cluster (GKE Only)
 
-After Terraform completes, connect to your GKE cluster:
+**If you enabled GKE**, after Terraform completes, connect to your GKE cluster:
 
 ```bash
 gcloud container clusters get-credentials data-discovery-cluster \
   --region us-central1 \
-  --project lennyisagoodboy
+  --project ${PROJECT_ID}
 ```
 
 Verify the connection:
@@ -77,9 +86,11 @@ Verify the connection:
 kubectl get nodes
 ```
 
+**If you disabled GKE**, skip this step. The system will run entirely on Cloud Composer.
+
 ## Infrastructure Components
 
-### GKE Cluster
+### GKE Cluster (Optional - `enable_gke = true`)
 
 - **Name**: `data-discovery-cluster`
 - **Location**: Regional (`us-central1`)
@@ -89,18 +100,19 @@ kubectl get nodes
 - **Network**: Private cluster (no external IPs on nodes)
 - **Workload Identity**: Enabled for secure GCP API access
 - **Features**: Shielded nodes, auto-repair, auto-upgrade
+- **Note**: Set `enable_gke = false` to skip GKE deployment and use Cloud Composer only
 
 ### GCS Buckets
 
 #### JSONL Bucket
-- **Name**: `lennyisagoodboy-data-discovery-jsonl`
+- **Name**: `${PROJECT_ID}-data-discovery-jsonl`
 - **Purpose**: Store JSONL files for Vertex AI Search ingestion
 - **Location**: Regional (`us-central1`)
 - **Lifecycle**: Nearline after 30 days, delete after 90 days
 - **Access**: Discovery SA (write), Vertex AI SA (read)
 
 #### Reports Bucket
-- **Name**: `lennyisagoodboy-data-discovery-reports`
+- **Name**: `${PROJECT_ID}-data-discovery-reports`
 - **Purpose**: Store Markdown reports for human consumption
 - **Location**: Regional (`us-central1`)
 - **Lifecycle**: Nearline after 60 days, delete after 180 days
@@ -109,7 +121,7 @@ kubectl get nodes
 ### Service Accounts
 
 #### 1. Discovery Service Account (Read-Only)
-- **Email**: `data-discovery-agent@lennyisagoodboy.iam.gserviceaccount.com`
+- **Email**: `data-discovery-agent@${PROJECT_ID}.iam.gserviceaccount.com`
 - **Purpose**: All data discovery and indexing operations
 - **Permissions**:
   - `roles/bigquery.metadataViewer` - Read BigQuery metadata
@@ -126,7 +138,7 @@ kubectl get nodes
 > **Note**: Looker permissions are disabled by default. Uncomment in `service-accounts.tf` if needed.
 
 #### 2. Metadata Write Service Account
-- **Email**: `data-discovery-metadata@lennyisagoodboy.iam.gserviceaccount.com`
+- **Email**: `data-discovery-metadata@${PROJECT_ID}.iam.gserviceaccount.com`
 - **Purpose**: Write enriched metadata to Data Catalog only (SR-2A compliant)
 - **Permissions**:
   - `roles/datacatalog.entryGroupOwner` - Write to Data Catalog
@@ -134,12 +146,24 @@ kubectl get nodes
   - `roles/logging.logWriter` - Audit trail
 - **Workload Identity**: Bound to K8s SA `metadata-writer` in namespace `data-discovery`
 
-#### 3. GKE Service Account
-- **Email**: `data-discovery-gke@lennyisagoodboy.iam.gserviceaccount.com`
+#### 3. GKE Service Account (Optional - only if `enable_gke = true`)
+- **Email**: `data-discovery-gke@${PROJECT_ID}.iam.gserviceaccount.com`
 - **Purpose**: GKE node operations
 - **Permissions**: Logging and monitoring only
 
-## Workload Identity Setup
+#### 4. Composer Service Account
+- **Email**: `data-discovery-composer@${PROJECT_ID}.iam.gserviceaccount.com`
+- **Purpose**: Cloud Composer/Airflow workflow orchestration
+- **Permissions**: 
+  - BigQuery read/write (for discovery and metadata storage)
+  - Data Catalog viewer
+  - Vertex AI and Discovery Engine editor
+  - Dataplex DataScan admin (for profiling)
+  - Data Lineage admin (for tracking)
+
+## Workload Identity Setup (GKE Only)
+
+**This section only applies if you enabled GKE (`enable_gke = true`).**
 
 After creating the cluster, you need to set up Kubernetes service accounts:
 
@@ -153,11 +177,13 @@ kubectl create serviceaccount metadata-writer -n data-discovery
 
 # Annotate with GCP service account emails
 kubectl annotate serviceaccount discovery-agent -n data-discovery \
-  iam.gke.io/gcp-service-account=data-discovery-agent@lennyisagoodboy.iam.gserviceaccount.com
+  iam.gke.io/gcp-service-account=data-discovery-agent@${PROJECT_ID}.iam.gserviceaccount.com
 
 kubectl annotate serviceaccount metadata-writer -n data-discovery \
-  iam.gke.io/gcp-service-account=data-discovery-metadata@lennyisagoodboy.iam.gserviceaccount.com
+  iam.gke.io/gcp-service-account=data-discovery-metadata@${PROJECT_ID}.iam.gserviceaccount.com
 ```
+
+**If you disabled GKE**, workload identity is not needed. All workflows run in Cloud Composer.
 
 ## Security Notes
 
@@ -210,7 +236,11 @@ Configure alerts by:
 
 Estimated monthly costs (us-central1):
 
-- **GKE Cluster**:
+- **Cloud Composer (Small)**:
+  - Environment: ~$300-400/month (always running)
+  - Includes managed Airflow with 1-3 workers
+
+- **GKE Cluster** (if `enable_gke = true`):
   - Management fee: $73/month
   - 2x e2-standard-2 nodes: ~$50/month
   - **Total GKE**: ~$123/month
@@ -222,9 +252,11 @@ Estimated monthly costs (us-central1):
 
 - **Vertex AI Search**: Not included (deployed separately)
 
-**Total Estimated Cost**: ~$130-150/month for dev environment
+**Total Estimated Cost**: 
+- With GKE: ~$430-550/month
+- Without GKE (`enable_gke = false`): ~$305-430/month
 
-> Scale up/down by adjusting `max_node_count` in `variables.tf`
+> Scale Composer workers by adjusting workloads_config in `composer.tf`
 
 ## Terraform Commands
 
@@ -311,7 +343,8 @@ terraform destroy
 ```
 
 ⚠️ **Warning**: This will delete:
-- GKE cluster and all workloads
+- Cloud Composer environment
+- GKE cluster and all workloads (if enabled)
 - GCS buckets (if `force_destroy = true`)
 - Service accounts
 - All data in buckets

@@ -1,0 +1,44 @@
+# =============================================================================
+# Kustomization File
+# =============================================================================
+# Use with: kubectl apply -k k8s/
+# =============================================================================
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: data-discovery
+
+resources:
+  - namespace.yaml
+  - serviceaccount.yaml
+  - configmap.yaml
+  - secret.yaml
+  - deployment.yaml
+  - service.yaml
+  # - ingress.yaml  # Uncomment if using Ingress
+
+# Common labels applied to all resources
+commonLabels:
+  app: data-discovery-agent
+  managed-by: kustomize
+
+# Image configurations
+images:
+  - name: gcr.io/PROJECT_ID/data-discovery-agent-mcp
+    newName: gcr.io/PROJECT_ID/data-discovery-agent-mcp
+    newTag: latest
+
+# ConfigMap generator (alternative to configmap.yaml)
+# configMapGenerator:
+#   - name: mcp-service-config
+#     literals:
+#       - MCP_SERVER_NAME=data-discovery-agent
+#       - MCP_SERVER_VERSION=1.0.0
+
+# Secret generator (for non-git secrets)
+# secretGenerator:
+#   - name: mcp-service-secrets
+#     literals:
+#       - GCP_PROJECT_ID=your-project-id
+

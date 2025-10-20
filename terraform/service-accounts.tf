@@ -3,6 +3,7 @@
 
 # Service Account for GKE nodes
 resource "google_service_account" "gke_sa" {
+  count        = var.enable_gke ? 1 : 0
   account_id   = "data-discovery-gke"
   display_name = "Data Discovery GKE Service Account"
   description  = "Service account for GKE cluster nodes"
@@ -11,21 +12,24 @@ resource "google_service_account" "gke_sa" {
 
 # Minimal permissions for GKE nodes
 resource "google_project_iam_member" "gke_log_writer" {
+  count   = var.enable_gke ? 1 : 0
   project = var.project_id
   role    = "roles/logging.logWriter"
-  member  = "serviceAccount:${google_service_account.gke_sa.email}"
+  member  = "serviceAccount:${google_service_account.gke_sa[0].email}"
 }
 
 resource "google_project_iam_member" "gke_metric_writer" {
+  count   = var.enable_gke ? 1 : 0
   project = var.project_id
   role    = "roles/monitoring.metricWriter"
-  member  = "serviceAccount:${google_service_account.gke_sa.email}"
+  member  = "serviceAccount:${google_service_account.gke_sa[0].email}"
 }
 
 resource "google_project_iam_member" "gke_monitoring_viewer" {
+  count   = var.enable_gke ? 1 : 0
   project = var.project_id
   role    = "roles/monitoring.viewer"
-  member  = "serviceAccount:${google_service_account.gke_sa.email}"
+  member  = "serviceAccount:${google_service_account.gke_sa[0].email}"
 }
 
 # Service Account for Discovery Operations (Read-Only)
@@ -141,10 +145,11 @@ resource "google_project_iam_member" "metadata_log_writer" {
 
 # Workload Identity for discovery service account
 resource "google_service_account_iam_member" "discovery_workload_identity" {
+  count              = var.enable_gke ? 1 : 0
   service_account_id = google_service_account.discovery_sa.name
   role               = "roles/iam.workloadIdentityUser"
   member             = "serviceAccount:${var.project_id}.svc.id.goog[data-discovery/discovery-agent]"
-  
+
   depends_on = [
     google_container_cluster.data_discovery
   ]
@@ -152,10 +157,11 @@ resource "google_service_account_iam_member" "discovery_workload_identity" {
 
 # Workload Identity for metadata write service account
 resource "google_service_account_iam_member" "metadata_workload_identity" {
+  count              = var.enable_gke ? 1 : 0
   service_account_id = google_service_account.metadata_write_sa.name
   role               = "roles/iam.workloadIdentityUser"
   member             = "serviceAccount:${var.project_id}.svc.id.goog[data-discovery/metadata-writer]"
-  
+
   depends_on = [
     google_container_cluster.data_discovery
   ]
@@ -230,6 +236,13 @@ resource "google_project_iam_member" "composer_aiplatform_user" {
   member  = "serviceAccount:${google_service_account.composer_sa.email}"
 }
 
+# Discovery Engine permissions for importing documents to Vertex AI Search
+resource "google_project_iam_member" "composer_discoveryengine_editor" {
+  project = var.project_id
+  role    = "roles/discoveryengine.editor"
+  member  = "serviceAccount:${google_service_account.composer_sa.email}"
+}
+
 # DLP permissions (for PII detection if used)
 resource "google_project_iam_member" "composer_dlp_reader" {
   project = var.project_id
@@ -250,6 +263,13 @@ resource "google_project_iam_member" "composer_dataplex_dataScanAdmin" {
   member  = "serviceAccount:${google_service_account.composer_sa.email}"
 }
 
+# Data Lineage permissions for tracking data flow
+resource "google_project_iam_member" "composer_datalineage_admin" {
+  project = var.project_id
+  role    = "roles/datalineage.admin"
+  member  = "serviceAccount:${google_service_account.composer_sa.email}"
+}
+
 # Note: Storage permissions are bucket-specific, defined in storage.tf
 
 # Output service account emails for reference
@@ -262,25 +282,25 @@ output "service_account_setup_notes" {
      Email: ${google_service_account.discovery_sa.email}
      Purpose: All data discovery and indexing operations
      Permissions: BigQuery metadata viewer, Data Catalog viewer, Logging viewer, DLP reader
-     K8s Namespace: data-discovery
-     K8s Service Account: discovery-agent
+     ${var.enable_gke ? "K8s Namespace: data-discovery" : ""}
+     ${var.enable_gke ? "K8s Service Account: discovery-agent" : ""}
   
   2. Metadata Write Service Account:
      Email: ${google_service_account.metadata_write_sa.email}
      Purpose: Writing enriched metadata to Data Catalog only
      Permissions: Data Catalog entry group owner
-     K8s Namespace: data-discovery
-     K8s Service Account: metadata-writer
+     ${var.enable_gke ? "K8s Namespace: data-discovery" : ""}
+     ${var.enable_gke ? "K8s Service Account: metadata-writer" : ""}
   
-  3. GKE Service Account:
-     Email: ${google_service_account.gke_sa.email}
-     Purpose: GKE node operations
-     Permissions: Logging and monitoring
+  ${var.enable_gke ? "3. GKE Service Account:" : ""}
+     ${var.enable_gke ? "Email: ${google_service_account.gke_sa[0].email}" : ""}
+     ${var.enable_gke ? "Purpose: GKE node operations" : ""}
+     ${var.enable_gke ? "Permissions: Logging and monitoring" : ""}
   
-  Workload Identity Setup:
-  - Create K8s namespace: kubectl create namespace data-discovery
-  - Create K8s service accounts: discovery-agent and metadata-writer
-  - Annotate them with the GCP service account emails (see deployment scripts)
+  ${var.enable_gke ? "Workload Identity Setup:" : ""}
+  ${var.enable_gke ? "- Create K8s namespace: kubectl create namespace data-discovery" : ""}
+  ${var.enable_gke ? "- Create K8s service accounts: discovery-agent and metadata-writer" : ""}
+  ${var.enable_gke ? "- Annotate them with the GCP service account emails (see deployment scripts)" : ""}
   EOT
 }
 
