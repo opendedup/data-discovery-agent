@@ -158,6 +158,19 @@ class BigQueryWriter:
                 quality_stats = struct_data.get("quality_stats", {}) or {}
                 schema_info = struct_data.get("schema_info", {}) or {}
                 
+                # Handle asset_type -> table_type conversion
+                # Try to get table_type first, then asset_type, default to TABLE
+                table_type = struct_data.get("table_type")
+                if not table_type:
+                    asset_type = struct_data.get("asset_type")
+                    if asset_type:
+                        # Handle enum or string
+                        table_type = asset_type if isinstance(asset_type, str) else str(asset_type)
+                    else:
+                        # Default to TABLE if neither field exists
+                        table_type = "TABLE"
+                        logger.warning(f"No table_type or asset_type found for {struct_data.get('table_id')}, defaulting to TABLE")
+                
                 # Track source table for lineage
                 table_full_name = f"{struct_data.get('project_id')}.{struct_data.get('dataset_id')}.{struct_data.get('table_id')}"
                 if table_full_name and table_full_name not in source_tables:
@@ -203,21 +216,26 @@ class BigQueryWriter:
                 if cache_ttl := struct_data.get("cache_ttl"):
                     key_metrics.append({"metric_name": "cache_ttl", "metric_value": cache_ttl})
 
-                # Prepare lineage
+                # Prepare lineage - always present even if empty, to indicate lineage was checked
                 lineage = []
-                lineage_raw = struct_data.get("lineage")
-                if lineage_raw:
-                    for upstream_table in lineage_raw.get("upstream_tables", []):
-                        lineage.append({"source": upstream_table, "target": table_full_name})
-                    for downstream_table in lineage_raw.get("downstream_tables", []):
-                        lineage.append({"source": table_full_name, "target": downstream_table})
+                lineage_raw = struct_data.get("lineage_info") or struct_data.get("lineage") or {}
+                
+                # Build upstream lineage
+                for upstream_table in lineage_raw.get("upstream_tables", []):
+                    lineage.append({"source": upstream_table, "target": table_full_name})
+                
+                # Build downstream lineage
+                for downstream_table in lineage_raw.get("downstream_tables", []):
+                    lineage.append({"source": table_full_name, "target": downstream_table})
+                
+                # If no lineage entries were found, the empty list explicitly indicates lineage was checked but none found
 
                 rows_to_insert.append({
                     "table_id": struct_data.get("table_id"),
                     "project_id": struct_data.get("project_id"),
                     "dataset_id": struct_data.get("dataset_id"),
                     "description": struct_data.get("description"),
-                    "table_type": struct_data.get("table_type"),
+                    "table_type": table_type,
                     "created": struct_data.get("created_timestamp"),
                     "last_modified": struct_data.get("last_modified_timestamp"),
                     "last_accessed": struct_data.get("last_accessed_timestamp"),

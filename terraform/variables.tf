@@ -137,3 +137,28 @@ variable "lineage_location" {
   default     = "" # Empty string means use var.region
 }
 
+# Artifact Registry Configuration
+variable "artifact_registry_location" {
+  description = "Location for Artifact Registry repository"
+  type        = string
+  default     = "us-central1"
+}
+
+variable "artifact_registry_repository_id" {
+  description = "ID of the Artifact Registry repository for Docker images"
+  type        = string
+  default     = "data-discovery"
+}
+
+variable "artifact_registry_retention_days" {
+  description = "Number of days to retain untagged images"
+  type        = number
+  default     = 30
+}
+
+variable "artifact_registry_keep_count" {
+  description = "Number of most recent image versions to keep"
+  type        = number
+  default     = 10
+}
+

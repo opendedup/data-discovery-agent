@@ -66,6 +66,7 @@ class BigQueryCollector:
         """
         self.project_id = project_id
         self.target_projects = target_projects or [project_id]
+        self.location = os.getenv("BQ_LOCATION", "US")  # BigQuery location for regional INFORMATION_SCHEMA queries
         
         # Build exclusion list - always exclude the metadata dataset to avoid circular indexing
         default_excludes = ['_staging', 'temp_', 'tmp_']
@@ -443,12 +444,17 @@ class BigQueryCollector:
                 except Exception as e:
                     logger.error(f"Error generating insights for {table_id}: {e}")
             
-            # Build lineage_info
-            lineage_info = None
+            # Build lineage_info - ALWAYS populate, even if empty, to indicate lineage was checked
             if lineage:
                 lineage_info = {
                     "upstream_tables": lineage.get("upstream", []),
                     "downstream_tables": lineage.get("downstream", []),
+                }
+            else:
+                # No lineage found - set empty arrays to explicitly indicate it was checked
+                lineage_info = {
+                    "upstream_tables": [],
+                    "downstream_tables": [],
                 }
             
             # Format using our MetadataFormatter with complete data
@@ -819,39 +825,93 @@ class BigQueryCollector:
         
         try:
             # Find downstream dependencies by searching view definitions
-            # that reference this table
+            # that reference this table across ALL datasets in the project
             table_ref = f"`{project_id}.{dataset_id}.{table_id}`"
             
-            # Query to find views that reference this table
+            # Search pattern variations for the table reference
+            search_patterns = [
+                f"{project_id}.{dataset_id}.{table_id}",  # Full reference
+                f"{dataset_id}.{table_id}",  # Dataset.table
+                f"`{project_id}.{dataset_id}.{table_id}`",  # Backtick wrapped
+            ]
+            
+            # Query ALL views in the project (not just same dataset)
             query = f"""
                 SELECT 
                     table_catalog as project_id,
                     table_schema as dataset_id,
                     table_name as table_id,
                     table_type
-                FROM `{project_id}.{dataset_id}.INFORMATION_SCHEMA.TABLES`
-                WHERE table_type IN ('VIEW', 'MATERIALIZED_VIEW')
-                AND table_schema = '{dataset_id}'
+                FROM `{project_id}.region-{self.location.lower()}`.INFORMATION_SCHEMA.VIEWS
+                WHERE table_catalog = '{project_id}'
             """
             
-            result = self.client.query(query).result()
-            
-            for row in result:
-                # Get the view definition to check if it references our table
-                view_project = row['project_id']
-                view_dataset = row['dataset_id']
-                view_table = row['table_id']
+            try:
+                result = self.client.query(query).result()
                 
-                try:
-                    view_ref = f"{view_project}.{view_dataset}.{view_table}"
-                    view_obj = self.client.get_table(view_ref)
+                for row in result:
+                    # Get the view definition to check if it references our table
+                    view_project = row['project_id']
+                    view_dataset = row['dataset_id']
+                    view_table = row['table_id']
                     
-                    # Check if view definition references our table
-                    if hasattr(view_obj, 'view_query') and view_obj.view_query:
-                        if table_id in view_obj.view_query or f"{dataset_id}.{table_id}" in view_obj.view_query:
-                            lineage_info["downstream_tables"].append(view_ref)
-                except Exception as e:
-                    logger.debug(f"Could not check view {view_ref}: {e}")
+                    # Skip if view is in excluded dataset
+                    if view_dataset in self.exclude_datasets:
+                        continue
+                    
+                    try:
+                        view_ref = f"{view_project}.{view_dataset}.{view_table}"
+                        view_obj = self.client.get_table(view_ref)
+                        
+                        # Check if view definition references our table
+                        if hasattr(view_obj, 'view_query') and view_obj.view_query:
+                            view_query_lower = view_obj.view_query.lower()
+                            
+                            # Check all search patterns
+                            for pattern in search_patterns:
+                                if pattern.lower() in view_query_lower:
+                                    if view_ref not in lineage_info["downstream_tables"]:
+                                        lineage_info["downstream_tables"].append(view_ref)
+                                        logger.debug(f"Found downstream dependency: {view_ref} references {table_ref}")
+                                    break
+                    except Exception as e:
+                        logger.debug(f"Could not check view {view_ref}: {e}")
+                        
+            except Exception as query_error:
+                # Fall back to single-dataset search if regional INFORMATION_SCHEMA fails
+                logger.debug(f"Regional INFORMATION_SCHEMA query failed, falling back to dataset-scoped: {query_error}")
+                
+                fallback_query = f"""
+                    SELECT 
+                        table_catalog as project_id,
+                        table_schema as dataset_id,
+                        table_name as table_id,
+                        table_type
+                    FROM `{project_id}.{dataset_id}.INFORMATION_SCHEMA.TABLES`
+                    WHERE table_type IN ('VIEW', 'MATERIALIZED_VIEW')
+                    AND table_schema = '{dataset_id}'
+                """
+                
+                result = self.client.query(fallback_query).result()
+                
+                for row in result:
+                    view_project = row['project_id']
+                    view_dataset = row['dataset_id']
+                    view_table = row['table_id']
+                    
+                    try:
+                        view_ref = f"{view_project}.{view_dataset}.{view_table}"
+                        view_obj = self.client.get_table(view_ref)
+                        
+                        if hasattr(view_obj, 'view_query') and view_obj.view_query:
+                            view_query_lower = view_obj.view_query.lower()
+                            for pattern in search_patterns:
+                                if pattern.lower() in view_query_lower:
+                                    if view_ref not in lineage_info["downstream_tables"]:
+                                        lineage_info["downstream_tables"].append(view_ref)
+                                    break
+                    except Exception as e:
+                        logger.debug(f"Could not check view {view_ref}: {e}")
             
             # Try to find upstream sources from table DDL (for tables created with SELECT)
             try:

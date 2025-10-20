@@ -100,10 +100,22 @@ class MarkdownFormatter:
             sections.append(self._generate_column_profiles_section(extended_metadata["column_profiles"]))
             sections.append("")
         
-        # Lineage (if available in extended metadata)
-        if extended_metadata and "lineage" in extended_metadata:
-            sections.append(self._generate_lineage_section(extended_metadata["lineage"]))
-            sections.append("")
+        # Lineage - ALWAYS show, check both struct_data and extended_metadata
+        lineage_data = None
+        if asset.struct_data and hasattr(asset.struct_data, 'lineage') and asset.struct_data.lineage:
+            lineage_data = asset.struct_data.lineage
+        elif extended_metadata and "lineage" in extended_metadata:
+            lineage_data = extended_metadata["lineage"]
+        elif extended_metadata and "lineage_info" in extended_metadata:
+            lineage_data = extended_metadata["lineage_info"]
+        
+        # Always generate lineage section, even if empty
+        if lineage_data is not None:
+            sections.append(self._generate_lineage_section(lineage_data))
+        else:
+            # No lineage data at all - generate empty section
+            sections.append(self._generate_lineage_section({"upstream_tables": [], "downstream_tables": []}))
+        sections.append("")
         
         # Usage patterns (if available)
         if extended_metadata and "usage" in extended_metadata:
@@ -410,7 +422,7 @@ class MarkdownFormatter:
         return "\n".join(lines)
     
     def _generate_lineage_section(self, lineage: Dict[str, Any]) -> str:
-        """Generate lineage section"""
+        """Generate lineage section - always shows both upstream and downstream, explicitly indicating when none found"""
         
         lines = []
         lines.append("## Data Lineage")
@@ -419,25 +431,28 @@ class MarkdownFormatter:
         upstream = lineage.get("upstream_tables", [])
         downstream = lineage.get("downstream_tables", [])
         
+        # ALWAYS show upstream section
+        lines.append("### Upstream Sources")
+        lines.append("")
         if upstream:
-            lines.append("### Upstream Sources")
-            lines.append("")
             for table in upstream[:10]:
                 lines.append(f"- `{table}`")
             if len(upstream) > 10:
                 lines.append(f"- *... and {len(upstream) - 10} more*")
-            lines.append("")
+        else:
+            lines.append("*No upstream sources found*")
+        lines.append("")
         
+        # ALWAYS show downstream section
+        lines.append("### Downstream Dependencies")
+        lines.append("")
         if downstream:
-            lines.append("### Downstream Consumers")
-            lines.append("")
             for table in downstream[:10]:
                 lines.append(f"- `{table}`")
             if len(downstream) > 10:
                 lines.append(f"- *... and {len(downstream) - 10} more*")
-        
-        if not upstream and not downstream:
-            lines.append("*No lineage information available*")
+        else:
+            lines.append("*No downstream dependencies found*")
         
         return "\n".join(lines)
     

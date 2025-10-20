@@ -18,6 +18,7 @@ resource "google_project_service" "required_apis" {
       "compute.googleapis.com",        # Compute (for networking)
       "dataplex.googleapis.com",       # Dataplex (for lineage and data quality)
       "composer.googleapis.com",       # Cloud Composer
+      "artifactregistry.googleapis.com", # Artifact Registry
     ],
     var.enable_gke ? ["container.googleapis.com"] : [] # GKE (optional)
   ))

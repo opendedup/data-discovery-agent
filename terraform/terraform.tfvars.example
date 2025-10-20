@@ -17,7 +17,7 @@ subnetwork = "projects/YOUR_HOST_PROJECT_ID/regions/YOUR_REGION/subnetworks/YOUR
 
 # GKE Cluster Configuration
 # Set enable_gke to false to skip GKE deployment (useful for Composer-only setups)
-enable_gke         = false
+enable_gke         = true
 cluster_name       = "data-discovery-cluster"
 machine_type       = "e2-standard-2"
 initial_node_count = 2
@@ -42,4 +42,11 @@ bq_location         = "US"
 # Enable Data Catalog Lineage tracking to record data provenance
 lineage_enabled  = true
 lineage_location = "YOUR_REGION"  # Should match your main region (defaults to region if not specified)
+
+# Artifact Registry Configuration
+# Docker image repository for Data Discovery MCP service
+artifact_registry_location       = "us-central1"
+artifact_registry_repository_id  = "data-discovery"
+artifact_registry_retention_days = 30  # Days to keep untagged images
+artifact_registry_keep_count     = 10  # Number of recent versions to keep
 

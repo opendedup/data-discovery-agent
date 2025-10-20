@@ -363,22 +363,31 @@ class MetadataFormatter:
             if issues := quality_info.get("quality_issues"):
                 sections.append(f"- **Issues**: {len(issues)} quality issues found")
         
-        # Usage and lineage - Enhanced to show all dependencies
+        # Usage and lineage - Always show, explicitly indicating when none found
         if lineage_info:
             sections.append("")
             sections.append("## Lineage")
             
-            if upstream := lineage_info.get("upstream_tables"):
-                sections.append("")
-                sections.append("**Upstream Sources:**")
+            upstream = lineage_info.get("upstream_tables", [])
+            downstream = lineage_info.get("downstream_tables", [])
+            
+            # ALWAYS show upstream
+            sections.append("")
+            sections.append("**Upstream Sources:**")
+            if upstream:
                 for table in upstream:  # Show all, not truncated
                     sections.append(f"- {table}")
+            else:
+                sections.append("- *No upstream sources found*")
             
-            if downstream := lineage_info.get("downstream_tables"):
-                sections.append("")
-                sections.append("**Downstream Consumers:**")
+            # ALWAYS show downstream
+            sections.append("")
+            sections.append("**Downstream Consumers:**")
+            if downstream:
                 for table in downstream:  # Show all, not truncated
                     sections.append(f"- {table}")
+            else:
+                sections.append("- *No downstream dependencies found*")
         
         # Security and governance
         if security_info or governance_info:
