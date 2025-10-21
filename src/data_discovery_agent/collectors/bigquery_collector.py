@@ -38,6 +38,7 @@ class BigQueryCollector:
     - Basic cost estimation
     - Progress tracking
     - Error handling and retry logic
+    - Label-based filtering (hierarchical: table labels override dataset labels)
     """
     
     def __init__(
@@ -49,7 +50,8 @@ class BigQueryCollector:
         dataplex_location: str = "us-central1",
         use_gemini_descriptions: bool = True,
         gemini_api_key: Optional[str] = None,
-        max_workers: int = 5,
+        max_workers: int = 2,
+        filter_label_key: str = "ignore-gmcp-discovery-scan",
     ):
         """
         Initialize BigQuery collector.
@@ -62,7 +64,10 @@ class BigQueryCollector:
             dataplex_location: Dataplex location for profile scans (default: us-central1)
             use_gemini_descriptions: Use Gemini to generate descriptions for tables without them
             gemini_api_key: Gemini API key (or uses GEMINI_API_KEY env var)
-            max_workers: Maximum number of concurrent threads for collection (default: 5)
+            max_workers: Maximum number of concurrent threads for collection (default: 2)
+            filter_label_key: BigQuery label key to use for filtering (default: ignore-gmcp-discovery-scan)
+                             Tables/datasets with this label set to 'true' are skipped.
+                             Table labels override dataset labels.
         """
         self.project_id = project_id
         self.target_projects = target_projects or [project_id]
@@ -84,6 +89,7 @@ class BigQueryCollector:
         
         self.use_dataplex_profiling = use_dataplex_profiling
         self.max_workers = max_workers
+        self.filter_label_key = filter_label_key
         self.stats_lock = Lock()  # Thread-safe stats updates
         
         # Initialize clients
@@ -121,7 +127,7 @@ class BigQueryCollector:
                 if self.gemini_describer.enabled:
                     logger.info("Gemini description generation enabled")
                 else:
-                    logger.warning("Gemini API key not found - description generation disabled")
+                    logger.warning("Gemini description generation disabled")
                     self.gemini_describer = None
             except Exception as e:
                 logger.warning(f"Could not initialize Gemini describer: {e}")
@@ -137,12 +143,15 @@ class BigQueryCollector:
             'tables_formatted': 0,
             'errors': 0,
             'descriptions_generated': 0,
+            'datasets_filtered_by_label': 0,
+            'tables_filtered_by_label': 0,
         }
         
         logger.info(
             f"Initialized BigQueryCollector for project={project_id}, "
             f"targets={target_projects}, "
-            f"excluding datasets: {self.exclude_datasets}"
+            f"excluding datasets: {self.exclude_datasets}, "
+            f"filter_label_key={filter_label_key}"
         )
     
     def collect_all(
@@ -213,11 +222,23 @@ class BigQueryCollector:
                     logger.debug(f"Skipping excluded dataset: {dataset_id}")
                     continue
                 
+                # Get dataset labels for filtering
+                dataset_labels = self._get_dataset_labels(project_id, dataset_id)
+                
+                # Check if dataset should be filtered by label
+                dataset_filtered = self._should_filter_by_label(dataset_labels)
+                if dataset_filtered:
+                    logger.debug(
+                        f"Dataset {dataset_id} has {self.filter_label_key}=true, "
+                        f"will skip tables unless they have {self.filter_label_key}=false"
+                    )
+                
                 try:
                     dataset_assets = self._scan_dataset(
                         project_id,
                         dataset_id,
-                        include_views=include_views
+                        include_views=include_views,
+                        dataset_labels=dataset_labels
                     )
                     assets.extend(dataset_assets)
                     with self.stats_lock:
@@ -241,10 +262,24 @@ class BigQueryCollector:
         project_id: str,
         dataset_id: str,
         include_views: bool = True,
+        dataset_labels: Optional[Dict[str, str]] = None,
     ) -> List[BigQueryAssetSchema]:
-        """Scan all tables in a dataset using multi-threading"""
+        """
+        Scan all tables in a dataset using multi-threading.
+        
+        Args:
+            project_id: GCP project ID
+            dataset_id: BigQuery dataset ID
+            include_views: Whether to include views
+            dataset_labels: Labels from the dataset (for hierarchical filtering)
+        
+        Returns:
+            List of BigQueryAssetSchema assets
+        """
         
         assets = []
+        dataset_labels = dataset_labels or {}
+        dataset_filtered = self._should_filter_by_label(dataset_labels)
         
         try:
             dataset_ref = f"{project_id}.{dataset_id}"
@@ -252,12 +287,59 @@ class BigQueryCollector:
             
             logger.info(f"Found {len(tables)} tables in {dataset_ref}")
             
-            # Filter tables
+            # Filter tables by type and labels
             tables_to_process = []
             for table_ref in tables:
                 # Skip views if not included
                 if not include_views and table_ref.table_type == "VIEW":
                     continue
+                
+                # Apply hierarchical label filtering
+                # Get table to check its labels
+                try:
+                    table = self.client.get_table(f"{project_id}.{dataset_id}.{table_ref.table_id}")
+                    table_labels = dict(table.labels) if table.labels else {}
+                    
+                    # Check if table should be filtered
+                    table_filtered = self._should_filter_by_label(table_labels)
+                    
+                    # Hierarchical logic:
+                    # 1. If table has explicit label, use that (overrides dataset)
+                    # 2. Otherwise, use dataset-level setting
+                    if self.filter_label_key in table_labels:
+                        # Table has explicit label - use it
+                        if table_filtered:
+                            logger.debug(
+                                f"Skipping table {table_ref.table_id}: "
+                                f"{self.filter_label_key}=true"
+                            )
+                            with self.stats_lock:
+                                self.stats['tables_filtered_by_label'] += 1
+                            continue
+                        else:
+                            logger.debug(
+                                f"Including table {table_ref.table_id}: "
+                                f"{self.filter_label_key}=false (overrides dataset)"
+                            )
+                    elif dataset_filtered:
+                        # No table label, but dataset is filtered
+                        logger.debug(
+                            f"Skipping table {table_ref.table_id}: "
+                            f"inherited from dataset {self.filter_label_key}=true"
+                        )
+                        with self.stats_lock:
+                            self.stats['tables_filtered_by_label'] += 1
+                        continue
+                    
+                except Exception as e:
+                    logger.warning(f"Could not check labels for {table_ref.table_id}: {e}")
+                    # If we can't get labels, apply dataset-level filter
+                    if dataset_filtered:
+                        logger.debug(f"Skipping table {table_ref.table_id}: dataset filtered and labels unavailable")
+                        with self.stats_lock:
+                            self.stats['tables_filtered_by_label'] += 1
+                        continue
+                
                 tables_to_process.append(table_ref)
             
             logger.info(f"Processing {len(tables_to_process)} tables with {self.max_workers} workers")
@@ -414,9 +496,23 @@ class BigQueryCollector:
                             self.stats['descriptions_generated'] += 1
                         logger.info(f"✓ Generated description for {table_id}")
                     else:
-                        logger.warning(f"Failed to generate description for {table_id}")
+                        logger.warning(f"Failed to generate description for {table_id}, using fallback")
+                        # Provide a fallback description if Gemini fails
+                        table_metadata["description"] = self._generate_fallback_description(
+                            table_ref, table.table_type, table.num_rows, len(table.schema) if table.schema else 0
+                        )
                 except Exception as e:
-                    logger.error(f"Error generating description for {table_id}: {e}")
+                    logger.error(f"Error generating description for {table_id}: {e}, using fallback")
+                    # Provide a fallback description on exception
+                    table_metadata["description"] = self._generate_fallback_description(
+                        table_ref, table.table_type, table.num_rows, len(table.schema) if table.schema else 0
+                    )
+            
+            # If still no description (no Gemini describer), provide fallback
+            if not table_metadata["description"]:
+                table_metadata["description"] = self._generate_fallback_description(
+                    table_ref, table.table_type, table.num_rows, len(table.schema) if table.schema else 0
+                )
             
             # Generate analytical insights with Gemini
             insights = None
@@ -445,10 +541,11 @@ class BigQueryCollector:
                     logger.error(f"Error generating insights for {table_id}: {e}")
             
             # Build lineage_info - ALWAYS populate, even if empty, to indicate lineage was checked
+            # Note: _get_lineage() returns dict with keys "upstream_tables" and "downstream_tables"
             if lineage:
                 lineage_info = {
-                    "upstream_tables": lineage.get("upstream", []),
-                    "downstream_tables": lineage.get("downstream", []),
+                    "upstream_tables": lineage.get("upstream_tables", []),
+                    "downstream_tables": lineage.get("downstream_tables", []),
                 }
             else:
                 # No lineage found - set empty arrays to explicitly indicate it was checked
@@ -480,11 +577,16 @@ class BigQueryCollector:
         
         fields = []
         for field in schema:
+            # Generate fallback description if missing
+            description = field.description
+            if not description:
+                description = self._generate_field_fallback_description(field.name, field.field_type, field.mode)
+            
             field_dict = {
                 "name": field.name,
                 "type": field.field_type,
                 "mode": field.mode,
-                "description": field.description or "",
+                "description": description,
             }
             
             # Handle nested fields
@@ -494,7 +596,7 @@ class BigQueryCollector:
                         "name": f.name,
                         "type": f.field_type,
                         "mode": f.mode,
-                        "description": f.description or "",
+                        "description": f.description or self._generate_field_fallback_description(f.name, f.field_type, f.mode),
                     }
                     for f in field.fields
                 ]
@@ -572,8 +674,80 @@ class BigQueryCollector:
             "has_phi": has_phi,
         }
     
+    def _generate_fallback_description(
+        self, 
+        table_ref: str, 
+        table_type: str, 
+        row_count: Optional[int], 
+        column_count: int
+    ) -> str:
+        """
+        Generate a basic fallback description when no description exists and Gemini fails.
+        
+        Args:
+            table_ref: Full table reference (project.dataset.table)
+            table_type: Type of the table (TABLE, VIEW, etc.)
+            row_count: Number of rows in the table
+            column_count: Number of columns in the table
+            
+        Returns:
+            A basic description string
+        """
+        parts = table_ref.split('.')
+        table_id = parts[-1] if parts else "unknown"
+        
+        # Format table type for display
+        type_display = table_type.lower() if table_type else "table"
+        
+        # Build description
+        desc_parts = [f"BigQuery {type_display} '{table_id}'"]
+        
+        if column_count > 0:
+            desc_parts.append(f"with {column_count} column{'s' if column_count != 1 else ''}")
+        
+        if row_count is not None and row_count >= 0:
+            desc_parts.append(f"containing {row_count:,} row{'s' if row_count != 1 else ''}")
+        
+        description = " ".join(desc_parts) + "."
+        
+        return description
+    
+    def _generate_field_fallback_description(
+        self,
+        field_name: str,
+        field_type: str,
+        field_mode: str
+    ) -> str:
+        """
+        Generate a basic fallback description for a field without a description.
+        
+        Args:
+            field_name: Name of the field
+            field_type: Data type of the field
+            field_mode: Mode of the field (NULLABLE, REQUIRED, REPEATED)
+            
+        Returns:
+            A basic description string
+        """
+        # Make field name more readable
+        readable_name = field_name.replace('_', ' ').title()
+        
+        # Build description based on field type
+        type_lower = field_type.lower()
+        mode_lower = field_mode.lower() if field_mode else "nullable"
+        
+        # Create a basic description
+        if mode_lower == "repeated":
+            description = f"{readable_name} - Array of {type_lower} values"
+        elif mode_lower == "required":
+            description = f"{readable_name} - Required {type_lower} field"
+        else:
+            description = f"{readable_name} - {type_lower.capitalize()} field"
+        
+        return description
+    
     def _should_exclude_dataset(self, dataset_id: str) -> bool:
-        """Check if dataset should be excluded"""
+        """Check if dataset should be excluded by pattern matching"""
         
         for pattern in self.exclude_datasets:
             if pattern in dataset_id:
@@ -581,17 +755,54 @@ class BigQueryCollector:
         
         return False
     
+    def _get_dataset_labels(self, project_id: str, dataset_id: str) -> Dict[str, str]:
+        """
+        Get labels for a dataset.
+        
+        Args:
+            project_id: GCP project ID
+            dataset_id: BigQuery dataset ID
+            
+        Returns:
+            Dictionary of labels (empty if dataset not found or has no labels)
+        """
+        try:
+            dataset_ref = f"{project_id}.{dataset_id}"
+            dataset = self.client.get_dataset(dataset_ref)
+            return dict(dataset.labels) if dataset.labels else {}
+        except Exception as e:
+            logger.debug(f"Could not get labels for dataset {dataset_id}: {e}")
+            return {}
+    
+    def _should_filter_by_label(self, labels: Dict[str, str]) -> bool:
+        """
+        Check if a resource should be filtered based on labels.
+        
+        Args:
+            labels: Dictionary of BigQuery labels
+            
+        Returns:
+            True if the resource should be filtered (skipped), False otherwise
+        """
+        if not labels or self.filter_label_key not in labels:
+            return False
+        
+        label_value = labels.get(self.filter_label_key, "")
+        # Case-insensitive comparison for the value
+        return str(label_value).lower() == "true"
+    
     def _print_stats(self):
         """Print collection statistics"""
         
         logger.info("=" * 60)
         logger.info("BigQuery Metadata Collection Statistics")
         logger.info("=" * 60)
-        logger.info(f"Projects scanned:    {self.stats['projects_scanned']}")
-        logger.info(f"Datasets scanned:    {self.stats['datasets_scanned']}")
-        logger.info(f"Tables scanned:      {self.stats['tables_scanned']}")
-        logger.info(f"Tables formatted:    {self.stats['tables_formatted']}")
-        logger.info(f"Errors encountered:  {self.stats['errors']}")
+        logger.info(f"Projects scanned:              {self.stats['projects_scanned']}")
+        logger.info(f"Datasets scanned:              {self.stats['datasets_scanned']}")
+        logger.info(f"Tables scanned:                {self.stats['tables_scanned']}")
+        logger.info(f"Tables formatted:              {self.stats['tables_formatted']}")
+        logger.info(f"Tables filtered by label:      {self.stats['tables_filtered_by_label']}")
+        logger.info(f"Errors encountered:            {self.stats['errors']}")
         logger.info("=" * 60)
     
     def get_stats(self) -> Dict[str, int]:
@@ -808,7 +1019,7 @@ class BigQueryCollector:
         Get data lineage information for a table.
         
         Returns upstream sources and downstream dependencies.
-        Uses INFORMATION_SCHEMA to find views/tables that reference this table.
+        Uses both INFORMATION_SCHEMA and Data Catalog Lineage API.
         
         Args:
             project_id: GCP project ID
@@ -823,6 +1034,67 @@ class BigQueryCollector:
             "downstream_tables": [],
         }
         
+        # First, try to get lineage from Data Catalog Lineage API
+        try:
+            from google.cloud import datacatalog_lineage_v1
+            
+            target_fqn = f"bigquery:{project_id}.{dataset_id}.{table_id}"
+            lineage_client = datacatalog_lineage_v1.LineageClient()
+            lineage_location = os.getenv("LINEAGE_LOCATION", self.location)
+            
+            # Search for upstream sources (where this table is the target)
+            try:
+                request = datacatalog_lineage_v1.SearchLinksRequest(
+                    parent=f"projects/{project_id}/locations/{lineage_location}",
+                    target=datacatalog_lineage_v1.EntityReference(
+                        fully_qualified_name=target_fqn
+                    )
+                )
+                
+                for link in lineage_client.search_links(request=request):
+                    source_fqn = link.source.fully_qualified_name
+                    # Don't add self-references
+                    if source_fqn != target_fqn and source_fqn not in lineage_info["upstream_tables"]:
+                        lineage_info["upstream_tables"].append(source_fqn)
+                        logger.debug(f"Found upstream source from Lineage API: {source_fqn}")
+            except Exception as e:
+                logger.warning(f"Could not search upstream links in Lineage API: {e}")
+            
+            # Search for downstream targets (where this table is the source)
+            try:
+                request = datacatalog_lineage_v1.SearchLinksRequest(
+                    parent=f"projects/{project_id}/locations/{lineage_location}",
+                    source=datacatalog_lineage_v1.EntityReference(
+                        fully_qualified_name=target_fqn
+                    )
+                )
+                
+                for link in lineage_client.search_links(request=request):
+                    target_fqn_link = link.target.fully_qualified_name
+                    # Don't add self-references or our own reports
+                    if (target_fqn_link != target_fqn 
+                        and not target_fqn_link.startswith("gs://") 
+                        and not target_fqn_link.endswith(".md")):
+                        # Normalize BigQuery FQN (remove bigquery: prefix for consistency)
+                        normalized_fqn = target_fqn_link.replace("bigquery:", "")
+                        if normalized_fqn not in lineage_info["downstream_tables"]:
+                            lineage_info["downstream_tables"].append(normalized_fqn)
+                            logger.debug(f"Found downstream target from Lineage API: {normalized_fqn}")
+            except Exception as e:
+                logger.warning(f"Could not search downstream links in Lineage API: {e}")
+                
+        except ImportError:
+            logger.warning("datacatalog_lineage_v1 not available, skipping Lineage API search")
+        except Exception as e:
+            logger.warning(f"Could not query Data Catalog Lineage API: {e}")
+        
+        # Log what we found from Lineage API
+        if lineage_info["upstream_tables"]:
+            logger.info(f"Found {len(lineage_info['upstream_tables'])} upstream sources from Lineage API for {table_id}")
+        if lineage_info["downstream_tables"]:
+            logger.info(f"Found {len(lineage_info['downstream_tables'])} downstream targets from Lineage API for {table_id}")
+        
+        # Then supplement with INFORMATION_SCHEMA discovery
         try:
             # Find downstream dependencies by searching view definitions
             # that reference this table across ALL datasets in the project
@@ -840,8 +1112,7 @@ class BigQueryCollector:
                 SELECT 
                     table_catalog as project_id,
                     table_schema as dataset_id,
-                    table_name as table_id,
-                    table_type
+                    table_name as table_id
                 FROM `{project_id}.region-{self.location.lower()}`.INFORMATION_SCHEMA.VIEWS
                 WHERE table_catalog = '{project_id}'
             """
@@ -878,40 +1149,90 @@ class BigQueryCollector:
                         logger.debug(f"Could not check view {view_ref}: {e}")
                         
             except Exception as query_error:
-                # Fall back to single-dataset search if regional INFORMATION_SCHEMA fails
-                logger.debug(f"Regional INFORMATION_SCHEMA query failed, falling back to dataset-scoped: {query_error}")
+                # Fall back to per-dataset search if regional INFORMATION_SCHEMA fails
+                logger.warning(f"Regional INFORMATION_SCHEMA query failed (likely permissions), falling back to dataset-scoped search: {query_error}")
                 
-                fallback_query = f"""
-                    SELECT 
-                        table_catalog as project_id,
-                        table_schema as dataset_id,
-                        table_name as table_id,
-                        table_type
-                    FROM `{project_id}.{dataset_id}.INFORMATION_SCHEMA.TABLES`
-                    WHERE table_type IN ('VIEW', 'MATERIALIZED_VIEW')
-                    AND table_schema = '{dataset_id}'
-                """
-                
-                result = self.client.query(fallback_query).result()
-                
-                for row in result:
-                    view_project = row['project_id']
-                    view_dataset = row['dataset_id']
-                    view_table = row['table_id']
+                # Get list of all datasets in the project
+                try:
+                    datasets = list(self.client.list_datasets(project=project_id))
+                    logger.info(f"Scanning {len(datasets)} datasets for downstream views...")
                     
-                    try:
-                        view_ref = f"{view_project}.{view_dataset}.{view_table}"
-                        view_obj = self.client.get_table(view_ref)
+                    for dataset_ref in datasets:
+                        dataset_name = dataset_ref.dataset_id
                         
-                        if hasattr(view_obj, 'view_query') and view_obj.view_query:
-                            view_query_lower = view_obj.view_query.lower()
-                            for pattern in search_patterns:
-                                if pattern.lower() in view_query_lower:
-                                    if view_ref not in lineage_info["downstream_tables"]:
-                                        lineage_info["downstream_tables"].append(view_ref)
-                                    break
-                    except Exception as e:
-                        logger.debug(f"Could not check view {view_ref}: {e}")
+                        # Skip excluded datasets
+                        if dataset_name in self.exclude_datasets:
+                            continue
+                        
+                        try:
+                            fallback_query = f"""
+                                SELECT 
+                                    table_catalog as project_id,
+                                    table_schema as dataset_id,
+                                    table_name as table_id,
+                                    table_type
+                                FROM `{project_id}.{dataset_name}.INFORMATION_SCHEMA.TABLES`
+                                WHERE table_type IN ('VIEW', 'MATERIALIZED_VIEW')
+                            """
+                            
+                            result = self.client.query(fallback_query).result()
+                            
+                            for row in result:
+                                view_project = row['project_id']
+                                view_dataset = row['dataset_id']
+                                view_table = row['table_id']
+                                
+                                try:
+                                    view_ref = f"{view_project}.{view_dataset}.{view_table}"
+                                    view_obj = self.client.get_table(view_ref)
+                                    
+                                    if hasattr(view_obj, 'view_query') and view_obj.view_query:
+                                        view_query_lower = view_obj.view_query.lower()
+                                        for pattern in search_patterns:
+                                            if pattern.lower() in view_query_lower:
+                                                if view_ref not in lineage_info["downstream_tables"]:
+                                                    lineage_info["downstream_tables"].append(view_ref)
+                                                    logger.debug(f"Found downstream dependency: {view_ref}")
+                                                break
+                                except Exception as e:
+                                    logger.debug(f"Could not check view {view_ref}: {e}")
+                        except Exception as dataset_error:
+                            logger.debug(f"Could not query dataset {dataset_name}: {dataset_error}")
+                            continue
+                except Exception as list_error:
+                    logger.warning(f"Could not list datasets, falling back to single dataset search: {list_error}")
+                    
+                    # Last resort: just check the same dataset as the table
+                    fallback_query = f"""
+                        SELECT 
+                            table_catalog as project_id,
+                            table_schema as dataset_id,
+                            table_name as table_id,
+                            table_type
+                        FROM `{project_id}.{dataset_id}.INFORMATION_SCHEMA.TABLES`
+                        WHERE table_type IN ('VIEW', 'MATERIALIZED_VIEW')
+                    """
+                    
+                    result = self.client.query(fallback_query).result()
+                    
+                    for row in result:
+                        view_project = row['project_id']
+                        view_dataset = row['dataset_id']
+                        view_table = row['table_id']
+                        
+                        try:
+                            view_ref = f"{view_project}.{view_dataset}.{view_table}"
+                            view_obj = self.client.get_table(view_ref)
+                            
+                            if hasattr(view_obj, 'view_query') and view_obj.view_query:
+                                view_query_lower = view_obj.view_query.lower()
+                                for pattern in search_patterns:
+                                    if pattern.lower() in view_query_lower:
+                                        if view_ref not in lineage_info["downstream_tables"]:
+                                            lineage_info["downstream_tables"].append(view_ref)
+                                        break
+                        except Exception as e:
+                            logger.debug(f"Could not check view {view_ref}: {e}")
             
             # Try to find upstream sources from table DDL (for tables created with SELECT)
             try:

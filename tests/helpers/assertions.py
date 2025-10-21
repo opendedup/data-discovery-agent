@@ -119,12 +119,19 @@ def assert_valid_bigquery_asset(
     # Schema validation
     schema_info = getattr(struct_data, "schema_info", None)
     if schema_info:
-        schema = getattr(schema_info, "fields", [])
+        # schema_info is a dict, so use dict access instead of getattr
+        schema = schema_info.get("fields", []) if isinstance(schema_info, dict) else getattr(schema_info, "fields", [])
         assert schema, "Schema fields cannot be empty"
         for field in schema:
-            field_name = getattr(field, "name", None)
-            field_type = getattr(field, "type", None)
-            field_desc = getattr(field, "description", None)
+            # Fields are also dicts
+            if isinstance(field, dict):
+                field_name = field.get("name")
+                field_type = field.get("type")
+                field_desc = field.get("description")
+            else:
+                field_name = getattr(field, "name", None)
+                field_type = getattr(field, "type", None)
+                field_desc = getattr(field, "description", None)
             assert field_name, "column name is required"
             assert field_type, "column type is required"
             assert_valid_column_description(field_desc, field_name or "unknown")

@@ -43,15 +43,29 @@ def discover_tables(
     target_projects: List[str],
     exclude_datasets: List[str],
     max_tables: int = None,
+    filter_label_key: str = "ignore-gmcp-discovery-scan",
 ) -> List[tuple]:
     """
     Discover all BigQuery tables in specified projects.
+    
+    Applies hierarchical label-based filtering:
+    - Dataset with filter_label_key=true: Skip all tables unless table has filter_label_key=false
+    - Table with filter_label_key=true: Skip table (even if dataset allows)
+    - Table with filter_label_key=false: Include table (even if dataset blocks)
+    
+    Args:
+        project_id: Project ID for BigQuery client
+        target_projects: List of projects to scan
+        exclude_datasets: Dataset patterns to exclude
+        max_tables: Maximum number of tables to discover
+        filter_label_key: Label key to check for filtering (case-sensitive)
     
     Returns:
         List of (project_id, dataset_id, table_id) tuples
     """
     client = bigquery.Client(project=project_id)
     tables = []
+    tables_filtered = 0
     
     for target_project in target_projects:
         logger.info(f"Scanning project: {target_project}")
@@ -68,6 +82,27 @@ def discover_tables(
                     logger.debug(f"  Skipping dataset (excluded): {dataset_id}")
                     continue
                 
+                # Get dataset labels
+                try:
+                    dataset_ref_full = f"{target_project}.{dataset_id}"
+                    dataset_obj = client.get_dataset(dataset_ref_full)
+                    dataset_labels = dict(dataset_obj.labels) if dataset_obj.labels else {}
+                except Exception as e:
+                    logger.debug(f"  Could not get labels for dataset {dataset_id}: {e}")
+                    dataset_labels = {}
+                
+                # Check if dataset should be filtered
+                dataset_filtered = (
+                    filter_label_key in dataset_labels and 
+                    str(dataset_labels[filter_label_key]).lower() == "true"
+                )
+                
+                if dataset_filtered:
+                    logger.debug(
+                        f"  Dataset {dataset_id} has {filter_label_key}=true, "
+                        f"will skip tables unless they have {filter_label_key}=false"
+                    )
+                
                 logger.info(f"  Scanning dataset: {dataset_id}")
                 
                 # List all tables in the dataset
@@ -76,11 +111,51 @@ def discover_tables(
                     tables_in_dataset = list(client.list_tables(dataset_ref))
                     
                     for table_ref in tables_in_dataset:
+                        # Get table labels
+                        try:
+                            table_full_ref = f"{target_project}.{dataset_id}.{table_ref.table_id}"
+                            table_obj = client.get_table(table_full_ref)
+                            table_labels = dict(table_obj.labels) if table_obj.labels else {}
+                        except Exception as e:
+                            logger.debug(f"    Could not get labels for table {table_ref.table_id}: {e}")
+                            table_labels = {}
+                        
+                        # Check if table should be filtered
+                        table_filtered = (
+                            filter_label_key in table_labels and 
+                            str(table_labels[filter_label_key]).lower() == "true"
+                        )
+                        
+                        # Apply hierarchical logic
+                        should_skip = False
+                        if filter_label_key in table_labels:
+                            # Table has explicit label - use it (overrides dataset)
+                            if table_filtered:
+                                logger.debug(f"    Skipping table {table_ref.table_id}: {filter_label_key}=true")
+                                should_skip = True
+                            else:
+                                logger.debug(
+                                    f"    Including table {table_ref.table_id}: "
+                                    f"{filter_label_key}=false (overrides dataset)"
+                                )
+                        elif dataset_filtered:
+                            # No table label, but dataset is filtered
+                            logger.debug(
+                                f"    Skipping table {table_ref.table_id}: "
+                                f"inherited from dataset {filter_label_key}=true"
+                            )
+                            should_skip = True
+                        
+                        if should_skip:
+                            tables_filtered += 1
+                            continue
+                        
                         tables.append((target_project, dataset_id, table_ref.table_id))
                         logger.debug(f"    Found table: {table_ref.table_id}")
                         
                         if max_tables and len(tables) >= max_tables:
                             logger.info(f"Reached max_tables limit: {max_tables}")
+                            logger.info(f"Tables filtered by label: {tables_filtered}")
                             return tables
                     
                 except Exception as e:
@@ -91,6 +166,7 @@ def discover_tables(
             logger.error(f"Error scanning project {target_project}: {e}")
             continue
     
+    logger.info(f"Tables filtered by label: {tables_filtered}")
     return tables
 
 
@@ -197,6 +273,13 @@ def main():
         help='Dataset patterns to exclude'
     )
     parser.add_argument(
+        '--filter-label-key',
+        default='ignore-gmcp-discovery-scan',
+        help='BigQuery label key to use for filtering (default: ignore-gmcp-discovery-scan). '
+             'Tables/datasets with this label set to "true" are skipped. '
+             'Table labels override dataset labels.'
+    )
+    parser.add_argument(
         '--max-tables',
         type=int,
         help='Maximum number of tables to process (for testing)'
@@ -255,6 +338,7 @@ def main():
     print(f"Target projects:          {', '.join(target_projects)}")
     print(f"Dataplex location:        {args.location}")
     print(f"Exclude datasets:         {', '.join(args.exclude_datasets)}")
+    print(f"Filter label key:         {args.filter_label_key}")
     print(f"Sampling percent:         {args.sampling_percent}%")
     print(f"Scan schedule:            {args.schedule_cron}")
     print(f"Run immediately:          {'Yes' if args.run_immediately else 'No'}")
@@ -272,6 +356,7 @@ def main():
             target_projects=target_projects,
             exclude_datasets=args.exclude_datasets,
             max_tables=args.max_tables,
+            filter_label_key=args.filter_label_key,
         )
         
         print(f"✓ Discovered {len(tables)} tables")

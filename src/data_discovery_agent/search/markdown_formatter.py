@@ -243,18 +243,24 @@ class MarkdownFormatter:
         lines.append("## Schema")
         lines.append("")
         
-        # Extract schema from extended metadata if available
+        # Extract schema from multiple sources (prioritize extended_metadata, then struct_data)
         schema = None
         sample_values = {}
         
+        # First, try extended_metadata
         if extended_metadata and "schema" in extended_metadata:
             schema = extended_metadata["schema"]
+        # If not in extended_metadata, check asset.struct_data.schema_info
+        elif asset.struct_data.schema_info:
+            schema = asset.struct_data.schema_info
         
-        # Get sample values from extended metadata
+        # Get sample values from extended metadata or quality_stats
         if extended_metadata and "quality_stats" in extended_metadata:
             quality_stats = extended_metadata["quality_stats"]
             if isinstance(quality_stats, dict) and "sample_values" in quality_stats:
                 sample_values = quality_stats["sample_values"]
+        elif asset.struct_data.quality_stats and isinstance(asset.struct_data.quality_stats, dict):
+            sample_values = asset.struct_data.quality_stats.get("sample_values", {})
         
         if schema and "fields" in schema:
             lines.append("| Column | Type | Mode | Description | Sample Values |")

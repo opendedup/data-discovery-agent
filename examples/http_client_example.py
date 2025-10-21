@@ -25,9 +25,10 @@ load_dotenv()
 
 class MCPHttpClient:
     """
-    HTTP client for MCP service.
+    HTTP client for MCP service using JSON-RPC 2.0.
     
     Connects to MCP service over HTTP (for containerized deployments).
+    Uses the Model Context Protocol over JSON-RPC for communication.
     """
     
     def __init__(self, base_url: str):
@@ -39,14 +40,86 @@ class MCPHttpClient:
         """
         self.base_url = base_url.rstrip("/")
         self.client = httpx.AsyncClient(timeout=60.0)
+        self.request_id = 0
+        self._initialized = False
     
     async def close(self) -> None:
         """Close HTTP client."""
         await self.client.aclose()
     
+    def _next_id(self) -> int:
+        """Get next request ID for JSON-RPC."""
+        self.request_id += 1
+        return self.request_id
+    
+    async def _jsonrpc_request(
+        self,
+        method: str,
+        params: Dict[str, Any] | None = None,
+    ) -> Dict[str, Any]:
+        """
+        Make a JSON-RPC 2.0 request.
+        
+        Args:
+            method: JSON-RPC method name
+            params: Method parameters
+            
+        Returns:
+            JSON-RPC result
+            
+        Raises:
+            Exception: If JSON-RPC returns an error
+        """
+        payload = {
+            "jsonrpc": "2.0",
+            "id": self._next_id(),
+            "method": method,
+        }
+        
+        if params is not None:
+            payload["params"] = params
+        
+        response = await self.client.post(
+            f"{self.base_url}/",
+            json=payload,
+        )
+        response.raise_for_status()
+        
+        data = response.json()
+        
+        # Check for JSON-RPC error
+        if "error" in data:
+            error = data["error"]
+            raise Exception(f"JSON-RPC error {error.get('code')}: {error.get('message')}")
+        
+        return data.get("result", {})
+    
+    async def initialize(self) -> Dict[str, Any]:
+        """
+        Initialize MCP connection.
+        
+        Returns:
+            Server capabilities and info
+        """
+        result = await self._jsonrpc_request(
+            "initialize",
+            {
+                "protocolVersion": "2025-06-18",
+                "capabilities": {
+                    "tools": {},
+                },
+                "clientInfo": {
+                    "name": "http-client-example",
+                    "version": "1.0.0"
+                }
+            }
+        )
+        self._initialized = True
+        return result
+    
     async def health_check(self) -> Dict[str, Any]:
         """
-        Check service health.
+        Check service health (non-MCP endpoint).
         
         Returns:
             Health status
@@ -57,15 +130,16 @@ class MCPHttpClient:
     
     async def list_tools(self) -> List[Dict[str, Any]]:
         """
-        List available MCP tools.
+        List available MCP tools using JSON-RPC.
         
         Returns:
             List of available tools
         """
-        response = await self.client.get(f"{self.base_url}/mcp/tools")
-        response.raise_for_status()
-        data = response.json()
-        return data.get("tools", [])
+        if not self._initialized:
+            await self.initialize()
+        
+        result = await self._jsonrpc_request("tools/list")
+        return result.get("tools", [])
     
     async def call_tool(
         self,
@@ -73,7 +147,7 @@ class MCPHttpClient:
         arguments: Dict[str, Any] | None = None,
     ) -> List[Dict[str, Any]]:
         """
-        Call an MCP tool.
+        Call an MCP tool using JSON-RPC.
         
         Args:
             tool_name: Name of the tool to call
@@ -82,18 +156,17 @@ class MCPHttpClient:
         Returns:
             Tool execution results
         """
-        payload = {
-            "name": tool_name,
-            "arguments": arguments or {}
-        }
+        if not self._initialized:
+            await self.initialize()
         
-        response = await self.client.post(
-            f"{self.base_url}/mcp/call-tool",
-            json=payload,
+        result = await self._jsonrpc_request(
+            "tools/call",
+            {
+                "name": tool_name,
+                "arguments": arguments or {}
+            }
         )
-        response.raise_for_status()
-        data = response.json()
-        return data.get("result", [])
+        return result.get("content", [])
 
 
 async def main(custom_query: str | None = None) -> None:

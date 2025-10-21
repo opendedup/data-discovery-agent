@@ -75,6 +75,11 @@ if [ ! -d "src/data_discovery_agent" ]; then
     exit 1
 fi
 
+# Clean up __pycache__ directories before deployment
+echo "  Cleaning up __pycache__ directories..."
+find src/data_discovery_agent -type d -name "__pycache__" -prune -exec rm -rf {} \; 2>/dev/null || true
+echo -e "${GREEN}  ✓ Cleaned up Python cache files${NC}"
+
 # Remove old version first (optional, but ensures clean deployment)
 echo "  Removing old source code..."
 gsutil -m rm -r "$COMPOSER_BUCKET/src/data_discovery_agent/" 2>/dev/null || true

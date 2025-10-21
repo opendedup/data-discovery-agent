@@ -186,6 +186,7 @@ class MetadataFormatter:
             table_id=table_id,
             data_source=DataSource.BIGQUERY,
             asset_type=asset_type,
+            description=table_metadata.get("description"),
             has_pii=has_pii,
             has_phi=has_phi,
             encryption_type=table_metadata.get("encryption_type"),

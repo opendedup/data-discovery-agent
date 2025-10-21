@@ -55,6 +55,9 @@ class StructData(BaseModel):
     data_source: DataSource = Field(..., description="Source system")
     asset_type: AssetType = Field(..., description="Type of asset")
     
+    # Documentation
+    description: Optional[str] = Field(None, description="Table/asset description")
+    
     # Security & Compliance
     has_pii: bool = Field(False, description="Contains PII data")
     has_phi: bool = Field(False, description="Contains PHI data")

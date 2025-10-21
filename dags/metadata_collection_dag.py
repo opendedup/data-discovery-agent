@@ -23,6 +23,18 @@ with DAG(
     catchup=False,
     schedule="@daily",
     tags=["data-discovery-agent"],
+    params={
+        "collector_args": {
+            "use_dataplex": True,  # Enable Dataplex profiling (avoids SQL MIN/MAX errors on complex types)
+            "dataplex_location": "us-central1",
+            "use_gemini": True,  # Enable Gemini-generated descriptions
+            "workers": 2,  # Parallel workers for collection
+            # Uncomment to override defaults:
+            # "max_tables": 10,  # Limit tables for testing
+            # "skip_views": False,  # Include/exclude views
+            # "exclude_datasets": ["_staging", "temp_", "tmp_"],
+        }
+    },
 ) as dag:
     collect_metadata = PythonOperator(
         task_id="collect_metadata",

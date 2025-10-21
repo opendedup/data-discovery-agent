@@ -220,6 +220,14 @@ class BigQueryWriter:
                 lineage = []
                 lineage_raw = struct_data.get("lineage_info") or struct_data.get("lineage") or {}
                 
+                # Debug logging
+                table_id_debug = struct_data.get("table_id")
+                if lineage_raw:
+                    upstream_count = len(lineage_raw.get("upstream_tables", []))
+                    downstream_count = len(lineage_raw.get("downstream_tables", []))
+                    if upstream_count > 0 or downstream_count > 0:
+                        logger.info(f"Processing lineage for {table_id_debug}: {upstream_count} upstream, {downstream_count} downstream")
+                
                 # Build upstream lineage
                 for upstream_table in lineage_raw.get("upstream_tables", []):
                     lineage.append({"source": upstream_table, "target": table_full_name})
@@ -227,6 +235,10 @@ class BigQueryWriter:
                 # Build downstream lineage
                 for downstream_table in lineage_raw.get("downstream_tables", []):
                     lineage.append({"source": table_full_name, "target": downstream_table})
+                
+                # Log final lineage count
+                if lineage:
+                    logger.info(f"Prepared {len(lineage)} lineage entries for {table_id_debug}")
                 
                 # If no lineage entries were found, the empty list explicitly indicates lineage was checked but none found
 

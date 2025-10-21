@@ -39,9 +39,14 @@ def collect_metadata_task(**context: Any) -> None:
     if not project_id:
         raise ValueError("GCP_PROJECT_ID environment variable is required")
     
-    # Allow manual override via dag_run.conf for testing/manual runs
-    args = context.get('dag_run', {}).conf if context.get('dag_run') else {}
-    conf_args = args.get('collector_args', {}) if args else {}
+    filter_label_key = os.getenv('DISCOVERY_FILTER_LABEL_KEY', 'ignore-gmcp-discovery-scan')
+    
+    # Get default params from DAG definition, then override with dag_run.conf if provided
+    default_params = context.get('params', {})
+    dag_run_conf = context.get('dag_run', {}).conf if context.get('dag_run') else {}
+    
+    # Merge: DAG params as base, override with manual trigger config
+    conf_args = {**default_params.get('collector_args', {}), **dag_run_conf.get('collector_args', {})}
     
     logger.info("Starting metadata collection task.")
     collector = BigQueryCollector(
@@ -53,6 +58,7 @@ def collect_metadata_task(**context: Any) -> None:
         use_gemini_descriptions=conf_args.get('use_gemini', True),
         gemini_api_key=conf_args.get('gemini_api_key', os.getenv('GEMINI_API_KEY')),
         max_workers=conf_args.get('workers', 2),
+        filter_label_key=conf_args.get('filter_label_key', filter_label_key),
     )
     
     assets = collector.collect_all(
@@ -65,9 +71,29 @@ def collect_metadata_task(**context: Any) -> None:
         
     logger.info(f"Collected {len(assets)} assets.")
     
+    # Debug: Check lineage before serialization
+    for asset in assets:
+        if asset.struct_data.table_id == 'odds':
+            lineage = getattr(asset.struct_data, 'lineage', None)
+            if lineage:
+                logger.info(f"DEBUG: odds asset HAS lineage before model_dump: upstream={len(lineage.get('upstream_tables', []))}, downstream={len(lineage.get('downstream_tables', []))}")
+            else:
+                logger.warning(f"DEBUG: odds asset has NO lineage attribute before model_dump")
+    
     # Push assets to XComs for downstream tasks
     # Pydantic models need to be converted to dicts for XCom serialization
     asset_dicts = [asset.model_dump() for asset in assets]
+    
+    # Debug: Check lineage after serialization
+    for asset_dict in asset_dicts:
+        if asset_dict.get('struct_data', {}).get('table_id') == 'odds':
+            lineage = asset_dict.get('struct_data', {}).get('lineage')
+            if lineage:
+                logger.info(f"DEBUG: odds asset HAS lineage after model_dump: upstream={len(lineage.get('upstream_tables', []))}, downstream={len(lineage.get('downstream_tables', []))}")
+            else:
+                logger.warning(f"DEBUG: odds asset has NO lineage in struct_data after model_dump")
+                logger.warning(f"DEBUG: struct_data keys: {list(asset_dict.get('struct_data', {}).keys())}")
+    
     context['ti'].xcom_push(key='assets', value=asset_dicts)
 
 
