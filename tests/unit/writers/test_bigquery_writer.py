@@ -102,7 +102,7 @@ class TestBigQueryWriter:
         assets = [create_sample_asset_schema()]
 
         # Write assets
-        writer.write_assets(assets)
+        writer.write_to_bigquery(assets)
 
         # Should call lineage recording
         mock_record_lineage.assert_called()
@@ -118,7 +118,7 @@ class TestBigQueryWriter:
         mock_client_instance.insert_rows_json.return_value = []
 
         writer = BigQueryWriter(project_id="test-project")
-        assets = [create_sample_asset_schema().model_dump()]
+        assets = [create_sample_asset_schema()]
 
         writer.write_to_bigquery(assets)
 
@@ -146,7 +146,7 @@ class TestBigQueryWriter:
             for i in range(10)
         ]
 
-        writer.write_assets(assets)
+        writer.write_to_bigquery(assets)
 
         # Should insert all assets
         assert mock_client_instance.insert_rows_json.called
@@ -167,9 +167,11 @@ class TestBigQueryWriter:
         writer = BigQueryWriter(project_id="test-project")
         assets = [create_sample_asset_schema()]
 
-        # Should handle errors gracefully
-        with pytest.raises(Exception) or True:
-            writer.write_assets(assets)
+        # Should handle errors gracefully (logs but doesn't raise)
+        writer.write_to_bigquery(assets)
+        
+        # Verify that insert was attempted despite errors
+        assert mock_client_instance.insert_rows_json.called
 
     @patch("data_discovery_agent.writers.bigquery_writer.bigquery.Client")
     def test_get_bigquery_schema(
@@ -181,7 +183,7 @@ class TestBigQueryWriter:
 
         writer = BigQueryWriter(project_id="test-project")
 
-        schema = writer._get_bigquery_schema()
+        schema = writer.get_bigquery_schema()
 
         assert schema is not None
         assert len(schema) > 0
@@ -207,7 +209,7 @@ class TestBigQueryWriter:
             )
 
             assets = [create_sample_asset_schema()]
-            writer.write_assets(assets)
+            writer.write_to_bigquery(assets)
 
             # Verify lineage recording was called with correct params
             if mock_record_lineage.called:

@@ -5,7 +5,7 @@ Defines the canonical schema for discovered assets used across
 the data discovery system (BigQuery writer, MCP tools, etc.).
 """
 
-from typing import TypedDict, List, Optional, Any
+from typing import TypedDict, List, Optional
 from datetime import datetime
 
 

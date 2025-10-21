@@ -15,7 +15,7 @@ References:
 import logging
 from typing import Any, Dict, Optional, List
 from google.cloud import dataplex_v1
-from google.cloud.dataplex_v1.types import DataScan, DataProfileResult, GetDataScanRequest
+from google.cloud.dataplex_v1.types import DataProfileResult
 from google.api_core.exceptions import NotFound
 
 logger = logging.getLogger(__name__)
@@ -92,82 +92,104 @@ class DataplexProfiler:
     def _format_profile_result(self, result: DataProfileResult) -> Dict[str, Any]:
         """Format Dataplex profile result into a dictionary compatible with our metadata format"""
         
+        # This function is complex due to the nested protobuf structure.
+        # It's designed to be robust to missing fields.
+        
+        def get_attr(obj, attr, default=None):
+            """Safely get attribute from a protobuf object or a dict."""
+            if isinstance(obj, dict):
+                return obj.get(attr, default)
+            return getattr(obj, attr, default)
+
         formatted = {
-            "row_count": result.row_count,
+            "row_count": get_attr(result, 'row_count'),
             "columns": {}
         }
         
         # Add scanned data info if available
-        if result.scanned_data and hasattr(result.scanned_data, 'data_size_bytes'):
+        scanned_data = get_attr(result, 'scanned_data')
+        if scanned_data and get_attr(scanned_data, 'data_size_bytes') is not None:
             formatted["scanned_data"] = {
-                "bytes": result.scanned_data.data_size_bytes
+                "bytes": get_attr(scanned_data, 'data_size_bytes')
             }
         
         # Extract column-level profiles
-        if result.profile and result.profile.fields:
-            for field in result.profile.fields:
-                col_name = field.name
-                profile_info = field.profile
+        profile = get_attr(result, 'profile')
+        if profile and get_attr(profile, 'fields'):
+            for field in get_attr(profile, 'fields', []):
+                col_name = get_attr(field, 'name')
+                profile_info = get_attr(field, 'profile')
                 
-                if not profile_info:
+                if not col_name or not profile_info:
                     continue
                 
+                null_ratio = get_attr(profile_info, 'null_ratio', 0.0)
+                distinct_ratio = get_attr(profile_info, 'distinct_ratio', 0.0)
+                
                 col_data = {
-                    "null_ratio": profile_info.null_ratio if hasattr(profile_info, 'null_ratio') else 0.0,
-                    "distinct_ratio": profile_info.distinct_ratio if hasattr(profile_info, 'distinct_ratio') else 0.0,
-                    "distinct_count": int(result.row_count * profile_info.distinct_ratio) if hasattr(profile_info, 'distinct_ratio') else 0,
+                    "null_ratio": null_ratio,
+                    "distinct_ratio": distinct_ratio,
+                    "distinct_count": int(formatted["row_count"] * distinct_ratio) if formatted["row_count"] else 0,
                 }
                 
                 # Integer/Numeric stats
-                if profile_info.integer_profile:
-                    int_profile = profile_info.integer_profile
+                int_profile = get_attr(profile_info, 'integer_profile')
+                dbl_profile = get_attr(profile_info, 'double_profile')
+                
+                if int_profile:
                     col_data["type"] = "numeric"
                     col_data.update({
-                        "avg": int_profile.average,  # Use "avg" for consistency with markdown formatter
-                        "mean": int_profile.average,  # Also keep "mean" for compatibility
-                        "min": int_profile.min_,
-                        "max": int_profile.max_,
-                        "stddev": int_profile.standard_deviation,
-                        "median": int_profile.quartiles[1] if int_profile.quartiles and len(int_profile.quartiles) > 1 else None,
-                        "quartiles": list(int_profile.quartiles) if int_profile.quartiles else [],
+                        "avg": get_attr(int_profile, 'average'),
+                        "mean": get_attr(int_profile, 'average'),
+                        "min": get_attr(int_profile, 'min_'),
+                        "max": get_attr(int_profile, 'max_'),
+                        "stddev": get_attr(int_profile, 'standard_deviation'),
+                        "median": get_attr(int_profile, 'quartiles', [])[1] if len(get_attr(int_profile, 'quartiles', [])) > 1 else None,
+                        "quartiles": list(get_attr(int_profile, 'quartiles', [])),
                     })
-                elif profile_info.double_profile:
-                    dbl_profile = profile_info.double_profile
+                elif dbl_profile:
                     col_data["type"] = "numeric"
                     col_data.update({
-                        "avg": dbl_profile.average,  # Use "avg" for consistency with markdown formatter
-                        "mean": dbl_profile.average,  # Also keep "mean" for compatibility
-                        "min": dbl_profile.min_,
-                        "max": dbl_profile.max_,
-                        "stddev": dbl_profile.standard_deviation,
-                        "median": dbl_profile.quartiles[1] if dbl_profile.quartiles and len(dbl_profile.quartiles) > 1 else None,
-                        "quartiles": list(dbl_profile.quartiles) if dbl_profile.quartiles else [],
+                        "avg": get_attr(dbl_profile, 'average'),
+                        "mean": get_attr(dbl_profile, 'average'),
+                        "min": get_attr(dbl_profile, 'min_'),
+                        "max": get_attr(dbl_profile, 'max_'),
+                        "stddev": get_attr(dbl_profile, 'standard_deviation'),
+                        "median": get_attr(dbl_profile, 'quartiles', [])[1] if len(get_attr(dbl_profile, 'quartiles', [])) > 1 else None,
+                        "quartiles": list(get_attr(dbl_profile, 'quartiles', [])),
                     })
                 
                 # String stats
-                if profile_info.string_profile:
-                    str_profile = profile_info.string_profile
+                str_profile = get_attr(profile_info, 'string_profile')
+                if str_profile:
                     col_data["type"] = "string"
                     col_data.update({
-                        "min_length": str_profile.min_length,
-                        "max_length": str_profile.max_length,
-                        "avg_length": str_profile.average_length if hasattr(str_profile, 'average_length') else None,
+                        "min_length": get_attr(str_profile, 'min_length'),
+                        "max_length": get_attr(str_profile, 'max_length'),
+                        "avg_length": get_attr(str_profile, 'average_length'),
                     })
                 
-                # Other types (timestamp, etc.) - still add to profiles for distinct count info
-                if not profile_info.integer_profile and not profile_info.double_profile and not profile_info.string_profile:
+                # Other types
+                if not int_profile and not dbl_profile and not str_profile:
                     col_data["type"] = "other"
                 
-                # Top N values (most common values)
-                if profile_info.top_n_values:
+                # Top N values
+                top_n_values = get_attr(profile_info, 'top_n_values', [])
+                if top_n_values:
                     col_data["top_values"] = [
-                        {"value": str(v.value), "count": v.count}
-                        for v in profile_info.top_n_values[:10]  # Limit to top 10
+                        {"value": str(get_attr(v, 'value')), "count": get_attr(v, 'count')}
+                        for v in top_n_values[:10]
                     ]
-                    
-                    # Extract sample values (just the values, not counts) for easy display
                     col_data["sample_values"] = [
-                        str(v.value) for v in profile_info.top_n_values[:3]  # Top 3 for samples
+                        str(get_attr(v, 'value')) for v in top_n_values[:3]
+                    ]
+                
+                # InfoTypes (PII)
+                info_types = get_attr(field, 'info_types', [])
+                if info_types:
+                    col_data["info_types"] = [
+                        {"name": get_attr(it, 'name'), "count": get_attr(it, 'count')}
+                        for it in info_types
                     ]
                 
                 formatted["columns"][col_name] = col_data

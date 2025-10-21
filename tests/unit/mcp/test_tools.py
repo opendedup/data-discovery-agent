@@ -77,13 +77,13 @@ class TestMCPTools:
 
     def test_format_tool_response(self) -> None:
         """Test tool response formatting."""
-        data = {"results": ["table1", "table2"], "total": 2}
+        data = "This is a test response string."
 
         response = format_tool_response(data)
 
-        assert len(response) > 0
-        assert all(hasattr(r, "type") for r in response)
-        assert all(hasattr(r, "text") for r in response)
+        assert len(response) == 1
+        assert response[0].type == "text"
+        assert response[0].text == data
 
     def test_format_error_response(self) -> None:
         """Test error response formatting."""

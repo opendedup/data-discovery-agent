@@ -8,7 +8,7 @@ from unittest.mock import Mock, patch
 import pytest
 
 from data_discovery_agent.collectors.bigquery_collector import BigQueryCollector
-from data_discovery_agent.search.jsonl_schema import BigQueryAssetSchema
+# Removed deprecated BigQueryAssetSchema import - using plain dicts now
 from tests.helpers.fixtures import create_mock_bigquery_table, create_mock_dataset
 
 if TYPE_CHECKING:
@@ -26,7 +26,7 @@ class TestBigQueryCollector:
 
         assert collector.project_id == "test-project"
         assert collector.target_projects == ["test-project"]
-        assert collector.max_workers == 5
+        assert collector.max_workers == 2
 
     def test_init_with_custom_params(self, mock_env: dict[str, str]) -> None:
         """Test collector initialization with custom parameters."""

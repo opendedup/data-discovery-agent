@@ -18,13 +18,14 @@ class TestSearchResultParser:
 
     def test_init(self) -> None:
         """Test parser initialization."""
-        parser = SearchResultParser()
+        parser = SearchResultParser(project_id="test-project")
 
         assert parser is not None
+        assert parser.project_id == "test-project"
 
     def test_parse_single_result(self) -> None:
         """Test parsing a single search result."""
-        parser = SearchResultParser()
+        parser = SearchResultParser(project_id="test-project")
 
         raw_result = {
             "id": "test-project.test_dataset.test_table",
@@ -33,12 +34,15 @@ class TestSearchResultParser:
                     "project_id": "test-project",
                     "dataset_id": "test_dataset",
                     "table_id": "test_table",
+                    "asset_type": "TABLE",
                     "description": "Test table",
-                }
+                    "indexed_at": "2024-01-01T00:00:00Z",
+                },
+                "derivedStructData": {"snippets": [{"snippet": "test snippet"}]},
             },
         }
 
-        result = parser.parse_result(raw_result)
+        result = parser._parse_single_result(raw_result, "test query")
 
         assert result is not None
         assert isinstance(result, SearchResult)
@@ -46,7 +50,7 @@ class TestSearchResultParser:
 
     def test_parse_multiple_results(self) -> None:
         """Test parsing multiple search results."""
-        parser = SearchResultParser()
+        parser = SearchResultParser(project_id="test-project")
 
         raw_results = [
             {
@@ -56,21 +60,24 @@ class TestSearchResultParser:
                         "project_id": "test-project",
                         "dataset_id": "test_dataset",
                         "table_id": f"table{i}",
+                        "asset_type": "TABLE",
                         "description": f"Test table {i}",
-                    }
+                        "indexed_at": "2024-01-01T00:00:00Z",
+                    },
+                    "derivedStructData": {"snippets": [{"snippet": "test snippet"}]},
                 },
             }
             for i in range(5)
         ]
 
-        results = [parser.parse_result(r) for r in raw_results]
+        results = [parser._parse_single_result(r, "test query") for r in raw_results]
 
         assert len(results) == 5
         assert all(isinstance(r, SearchResult) for r in results)
 
     def test_extract_table_metadata(self) -> None:
         """Test extraction of table metadata."""
-        parser = SearchResultParser()
+        parser = SearchResultParser(project_id="test-project")
 
         raw_result = {
             "id": "test-project.test_dataset.test_table",
@@ -79,24 +86,26 @@ class TestSearchResultParser:
                     "project_id": "test-project",
                     "dataset_id": "test_dataset",
                     "table_id": "test_table",
-                    "table_type": "TABLE",
+                    "asset_type": "TABLE",
                     "description": "Test table",
                     "row_count": 1000,
                     "size_bytes": 50000,
-                }
+                    "indexed_at": "2024-01-01T00:00:00Z",
+                },
+                "derivedStructData": {"snippets": [{"snippet": "test snippet"}]},
             },
         }
 
-        result = parser.parse_result(raw_result)
+        result = parser._parse_single_result(raw_result, "test query")
 
         assert result.project_id == "test-project"
         assert result.dataset_id == "test_dataset"
         assert result.table_id == "test_table"
-        assert result.description == "Test table"
+        assert "test snippet" in result.content_snippet
 
     def test_pagination_info(self) -> None:
         """Test extraction of pagination information."""
-        parser = SearchResultParser()
+        parser = SearchResultParser(project_id="test-project")
 
         raw_response = {
             "results": [
@@ -107,7 +116,10 @@ class TestSearchResultParser:
                             "project_id": "test-project",
                             "dataset_id": "test_dataset",
                             "table_id": "test_table",
-                        }
+                            "asset_type": "TABLE",
+                            "indexed_at": "2024-01-01T00:00:00Z",
+                        },
+                        "derivedStructData": {"snippets": [{"snippet": "test snippet"}]},
                     },
                 }
             ],
@@ -115,15 +127,15 @@ class TestSearchResultParser:
             "nextPageToken": "token123",
         }
 
-        response = parser.parse_response(raw_response)
+        response = parser.parse_response(raw_response, query="test query")
 
         assert isinstance(response, SearchResponse)
-        assert response.total_size == 100
+        assert response.total_count == 100
         assert response.next_page_token == "token123"
 
     def test_handles_missing_fields(self) -> None:
         """Test handling of missing optional fields."""
-        parser = SearchResultParser()
+        parser = SearchResultParser(project_id="test-project")
 
         raw_result = {
             "id": "test-project.test_dataset.test_table",
@@ -132,33 +144,39 @@ class TestSearchResultParser:
                     "project_id": "test-project",
                     "dataset_id": "test_dataset",
                     "table_id": "test_table",
+                    "asset_type": "TABLE",
+                    "indexed_at": "2024-01-01T00:00:00Z",
                     # Missing description and other optional fields
-                }
+                },
+                "derivedStructData": {"snippets": [{"snippet": "test snippet"}]},
             },
         }
 
-        result = parser.parse_result(raw_result)
+        result = parser._parse_single_result(raw_result, "test query")
 
         assert result is not None
         # Should handle missing fields gracefully
+        assert result.row_count is None
 
     def test_parse_empty_results(self) -> None:
         """Test parsing empty results."""
-        parser = SearchResultParser()
+        parser = SearchResultParser(project_id="test-project")
 
         raw_response = {
             "results": [],
             "totalSize": 0,
         }
 
-        response = parser.parse_response(raw_response)
+        response = parser.parse_response(raw_response, query="test query")
 
         assert response.results == []
-        assert response.total_size == 0
+        assert response.total_count == 0
 
     def test_extract_report_link(self) -> None:
         """Test extraction of report link if available."""
-        parser = SearchResultParser()
+        parser = SearchResultParser(
+            project_id="test-project", reports_bucket="test-bucket"
+        )
 
         raw_result = {
             "id": "test-project.test_dataset.test_table",
@@ -167,19 +185,21 @@ class TestSearchResultParser:
                     "project_id": "test-project",
                     "dataset_id": "test_dataset",
                     "table_id": "test_table",
-                    "report_link": "gs://bucket/reports/table.md",
-                }
+                    "asset_type": "TABLE",
+                    "indexed_at": "2024-01-01T00:00:00Z",
+                },
+                "derivedStructData": {"snippets": [{"snippet": "test snippet"}]},
             },
         }
 
-        result = parser.parse_result(raw_result)
+        result = parser._parse_single_result(raw_result, "test query")
 
         assert result is not None
-        # Should extract report link if present
+        assert result.report_link == "gs://test-bucket/test_dataset/test_table.md"
 
     def test_search_response_summary(self) -> None:
         """Test search response summary generation."""
-        parser = SearchResultParser()
+        parser = SearchResultParser(project_id="test-project")
 
         raw_response = {
             "results": [
@@ -190,7 +210,10 @@ class TestSearchResultParser:
                             "project_id": "test-project",
                             "dataset_id": "test_dataset",
                             "table_id": f"table{i}",
-                        }
+                            "asset_type": "TABLE",
+                            "indexed_at": "2024-01-01T00:00:00Z",
+                        },
+                        "derivedStructData": {"snippets": [{"snippet": "test snippet"}]},
                     },
                 }
                 for i in range(3)
@@ -198,22 +221,24 @@ class TestSearchResultParser:
             "totalSize": 10,
         }
 
-        response = parser.parse_response(raw_response)
+        response = parser.parse_response(raw_response, query="test query")
         summary = response.get_summary()
 
-        assert "3" in summary or "10" in summary
+        assert "10" in summary
         # Should include result counts
 
     def test_handles_malformed_results(self) -> None:
         """Test handling of malformed results."""
-        parser = SearchResultParser()
+        parser = SearchResultParser(project_id="test-project")
 
         raw_result = {
             "id": "malformed",
             # Missing document structure
         }
 
-        # Should handle gracefully
-        with pytest.raises(Exception) or True:
-            result = parser.parse_result(raw_result)
+        # Should handle gracefully by returning result with defaults
+        result = parser._parse_single_result(raw_result, "test query")
+        assert result is not None
+        assert result.title == "unknown"  # Default when no dataset/table found
+        assert result.content_snippet == "No content available"  # Default snippet
 

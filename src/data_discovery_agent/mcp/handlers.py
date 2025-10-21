@@ -17,7 +17,6 @@ from ..schemas.asset_schema import (
     DiscoveredAssetDict,
     SchemaFieldDict,
     LabelDict,
-    LineageDict,
 )
 from .config import MCPConfig
 from .tools import format_tool_response, format_error_response

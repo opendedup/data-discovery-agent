@@ -5,7 +5,10 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, Optional
 
-from data_discovery_agent.search.jsonl_schema import BigQueryAssetSchema
+from google.cloud.bigquery import Table as BigQueryTable
+from google.cloud.datacatalog_lineage_v1.types import LineageEvent, Link, Process, Run
+
+import pytest
 
 
 def assert_valid_table_description(
@@ -53,50 +56,35 @@ def assert_valid_column_description(
 
 
 def assert_valid_bigquery_asset(
-    asset: BigQueryAssetSchema, table_type: str = "TABLE"
+    asset: Dict[str, Any], table_type: str = "TABLE"
 ) -> None:
     """
-    Assert that a BigQueryAssetSchema is valid and complete.
+    Assert that a BigQuery asset dict is valid and complete.
     
     Args:
-        asset: BigQueryAssetSchema to validate
+        asset: Asset dict to validate
         table_type: Expected table type (TABLE or VIEW)
         
     Raises:
         AssertionError: If asset is invalid
     """
-    # Validate ID
-    assert asset.id, "Asset ID cannot be empty"
-    assert "." in asset.id, "Asset ID must be in format project.dataset.table"
-
-    # Validate content (ContentData is a Pydantic model, not a dict)
-    assert asset.content, "Asset content cannot be None"
-    assert asset.content.mime_type, "Content mime_type is required"
-    assert asset.content.text, "Content text is required"
-
-    # Validate structData (StructData is a Pydantic model, not a dict)
-    assert asset.struct_data, "Asset struct_data cannot be None"
-    struct_data = asset.struct_data
-
     # Required fields
-    assert struct_data.project_id, "project_id is required"
-    assert struct_data.dataset_id, "dataset_id is required"
-    assert struct_data.table_id, "table_id is required"
+    assert asset.get("project_id"), "project_id is required"
+    assert asset.get("dataset_id"), "dataset_id is required"
+    assert asset.get("table_id"), "table_id is required"
     
     # Check table_type if specified
     if table_type:
-        actual_type = struct_data.table_type if hasattr(struct_data, 'table_type') else struct_data.asset_type
-        # Handle enum or string
-        actual_type_str = actual_type if isinstance(actual_type, str) else str(actual_type)
-        assert actual_type_str == table_type, f"Expected {table_type}, got {actual_type_str}"
+        actual_type = asset.get("table_type", "TABLE")
+        assert actual_type == table_type, f"Expected {table_type}, got {actual_type}"
 
     # Description validation
-    description = getattr(struct_data, "description", None)
+    description = asset.get("description")
     assert_valid_table_description(description)
 
     # Statistics validation
-    row_count = getattr(struct_data, "row_count", None)
-    size_bytes = getattr(struct_data, "size_bytes", None)
+    row_count = asset.get("row_count")
+    size_bytes = asset.get("size_bytes")
     
     if table_type == "TABLE":
         assert row_count is not None, "row_count required for TABLE"
@@ -111,64 +99,46 @@ def assert_valid_bigquery_asset(
             assert size_bytes >= 0, "size_bytes must be non-negative"
 
     # Timestamp validation
-    created_time = getattr(struct_data, "created_timestamp", None) or getattr(struct_data, "created_time", None)
-    modified_time = getattr(struct_data, "last_modified_timestamp", None) or getattr(struct_data, "modified_time", None)
-    assert created_time, "created_time or created_timestamp is required"
-    assert modified_time, "modified_time or last_modified_timestamp is required"
+    created = asset.get("created")
+    modified = asset.get("last_modified")
+    assert created, "created timestamp is required"
+    assert modified, "last_modified timestamp is required"
 
     # Schema validation
-    schema_info = getattr(struct_data, "schema_info", None)
-    if schema_info:
-        # schema_info is a dict, so use dict access instead of getattr
-        schema = schema_info.get("fields", []) if isinstance(schema_info, dict) else getattr(schema_info, "fields", [])
+    schema = asset.get("schema", [])
+    if schema:
         assert schema, "Schema fields cannot be empty"
         for field in schema:
-            # Fields are also dicts
-            if isinstance(field, dict):
-                field_name = field.get("name")
-                field_type = field.get("type")
-                field_desc = field.get("description")
-            else:
-                field_name = getattr(field, "name", None)
-                field_type = getattr(field, "type", None)
-                field_desc = getattr(field, "description", None)
+            field_name = field.get("name")
+            field_type = field.get("type")
+            field_desc = field.get("description")
             assert field_name, "column name is required"
             assert field_type, "column type is required"
             assert_valid_column_description(field_desc, field_name or "unknown")
 
 
 def assert_valid_markdown(markdown: str, table_id: str) -> None:
-    """
-    Assert that markdown content is valid and well-formed.
-    
-    Args:
-        markdown: Markdown content to validate
-        table_id: Expected table ID in markdown
-        
-    Raises:
-        AssertionError: If markdown is invalid
-    """
-    assert markdown, "Markdown content cannot be empty"
+    """Assert that generated markdown is valid and contains key sections."""
+    assert markdown is not None
+    assert len(markdown) > 0
 
-    # Check for main sections
-    assert "# " in markdown, "Markdown must have H1 header"
+    # Check for key sections
+    table_name = table_id.split(".")[-1]
+    assert (
+        f"# {table_id}" in markdown
+    ), "Markdown must have H1 header with table name"
     assert "## Overview" in markdown, "Markdown must have Overview section"
     assert "## Schema" in markdown, "Markdown must have Schema section"
-    assert "## Statistics" in markdown, "Markdown must have Statistics section"
+    assert (
+        "## Data Lineage" in markdown
+    ), "Markdown must have Data Lineage section"
 
-    # Check for table in markdown
-    assert table_id in markdown, f"Table ID '{table_id}' must be in markdown"
+    # Check for table syntax
+    assert "| Column | Type |" in markdown
+    assert "|--------|------|" in markdown
 
-    # Check for table syntax (schema table)
-    assert "|" in markdown, "Markdown must contain table syntax"
-    assert "Column Name" in markdown or "column_name" in markdown.lower(), (
-        "Schema section must have column names"
-    )
-
-    # Check for no broken links
-    broken_link_pattern = r'\[.*?\]\(\s*\)'
-    broken_links = re.findall(broken_link_pattern, markdown)
-    assert not broken_links, f"Markdown contains broken links: {broken_links}"
+    # No obvious template errors
+    assert "{" not in markdown and "}" not in markdown
 
 
 def assert_valid_lineage_event(

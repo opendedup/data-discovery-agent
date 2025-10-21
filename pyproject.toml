@@ -9,8 +9,6 @@ packages = [{include = "data_discovery_agent", from = "src"}]
 [tool.poetry.dependencies]
 python = ">=3.10,<3.13"
 python-dotenv = "^1.0.0"
-pandas = "^2.0.0"
-numpy = "^1.24.0"
 pydantic = "^2.0.0"
 google-cloud-bigquery = "^3.11.0"
 google-cloud-storage = "^2.10.0"
@@ -26,16 +24,32 @@ uvicorn = {extras = ["standard"], version = "^0.32.0"}
 httpx = "^0.27.0"
 
 [tool.poetry.group.dev.dependencies]
-pytest = "^7.4.0"
-pytest-asyncio = "^0.21.0"
+pytest = "^7.4.2"
+pytest-asyncio = "^0.21.2"
 pytest-mock = "^3.11.0"
 pytest-cov = "^4.1.0"
-freezegun = "^1.2.0"
-responses = "^0.23.0"
+freezegun = "^1.2.2"
+responses = "^0.23.3"
 black = "^23.0.0"
 ruff = "^0.1.0"
+deptry = "^0.23.1"
 
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
+
+[tool.pytest.ini_options]
+minversion = "6.0"
+addopts = "-ra -q"
+testpaths = [
+    "tests",
+    "test_vertex_search.py"
+]
+markers = [
+    "unit",
+    "integration",
+    "e2e",
+    "search",
+    "lineage"
+]
 

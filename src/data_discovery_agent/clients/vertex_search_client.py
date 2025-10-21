@@ -7,7 +7,6 @@ Wraps the Discovery Engine API with our data models and query builder.
 
 import logging
 import time
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from google.cloud import discoveryengine_v1beta as discoveryengine
@@ -715,7 +714,7 @@ class VertexSearchClient:
             # In production, check operation.done()
             # For now, just wait
         
-        logger.info(f"Operation completed (or timed out)")
+        logger.info("Operation completed (or timed out)")
         
         return {"status": "completed"}
     

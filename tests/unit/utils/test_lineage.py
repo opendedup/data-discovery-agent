@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 from unittest.mock import Mock, patch
 
 import pytest
+from google.api_core.exceptions import GoogleAPICallError
 
 from data_discovery_agent.utils.lineage import (
     format_bigquery_fqn,
@@ -64,8 +65,12 @@ class TestLineageUtils:
             location="us-central1",
             process_name="test-dag",
             task_id="test-task",
-            source_fqn="bigquery:test-project.source.table",
-            target_fqn="bigquery:test-project.target.table",
+            source_targets=[
+                (
+                    "bigquery:test-project.source.table",
+                    "bigquery:test-project.target.table",
+                )
+            ],
             start_time=datetime.now(timezone.utc),
             end_time=datetime.now(timezone.utc),
             is_success=True,
@@ -99,8 +104,12 @@ class TestLineageUtils:
             location="us-central1",
             process_name="test-dag",
             task_id="test-task",
-            source_fqn="bigquery:test-project.source.table",
-            target_fqn="bigquery:test-project.target.table",
+            source_targets=[
+                (
+                    "bigquery:test-project.source.table",
+                    "bigquery:test-project.target.table",
+                )
+            ],
             start_time=datetime.now(timezone.utc),
             end_time=datetime.now(timezone.utc),
             is_success=False,  # Failed
@@ -126,21 +135,26 @@ class TestLineageUtils:
         mock_client_instance.create_run.return_value = mock_run
 
         # Record multiple events
-        for i in range(3):
-            record_lineage(
-                project_id="test-project",
-                location="us-central1",
-                process_name="test-dag",
-                task_id="test-task",
-                source_fqn=f"bigquery:test-project.source.table{i}",
-                target_fqn="bigquery:test-project.target.table",
-                start_time=datetime.now(timezone.utc),
-                end_time=datetime.now(timezone.utc),
-                is_success=True,
+        source_targets = [
+            (
+                f"bigquery:test-project.source.table{i}",
+                "bigquery:test-project.target.table",
             )
+            for i in range(3)
+        ]
+        record_lineage(
+            project_id="test-project",
+            location="us-central1",
+            process_name="test-dag",
+            task_id="test-task",
+            source_targets=source_targets,
+            start_time=datetime.now(timezone.utc),
+            end_time=datetime.now(timezone.utc),
+            is_success=True,
+        )
 
         # Should create multiple events
-        assert mock_client_instance.create_lineage_event.call_count >= 3
+        assert mock_client_instance.create_lineage_event.call_count == 3
 
     @patch(
         "data_discovery_agent.utils.lineage.datacatalog_lineage_v1.LineageClient"
@@ -153,21 +167,27 @@ class TestLineageUtils:
         mock_lineage_client.return_value = mock_client_instance
 
         # Simulate API error
-        mock_client_instance.create_process.side_effect = Exception("API Error")
+        mock_client_instance.create_process.side_effect = GoogleAPICallError(
+            "API Error"
+        )
 
-        # Should handle error gracefully
-        with pytest.raises(Exception):
-            record_lineage(
-                project_id="test-project",
-                location="us-central1",
-                process_name="test-dag",
-                task_id="test-task",
-                source_fqn="bigquery:test-project.source.table",
-                target_fqn="bigquery:test-project.target.table",
-                start_time=datetime.now(timezone.utc),
-                end_time=datetime.now(timezone.utc),
-                is_success=True,
-            )
+        # Should handle error gracefully and not raise an exception
+        events_created = record_lineage(
+            project_id="test-project",
+            location="us-central1",
+            process_name="test-dag",
+            task_id="test-task",
+            source_targets=[
+                (
+                    "bigquery:test-project.source.table",
+                    "bigquery:test-project.target.table",
+                )
+            ],
+            start_time=datetime.now(timezone.utc),
+            end_time=datetime.now(timezone.utc),
+            is_success=True,
+        )
+        assert events_created == 0
 
     def test_fqn_validation(self) -> None:
         """Test FQN format validation."""
@@ -196,8 +216,12 @@ class TestLineageUtils:
             location="us-central1",
             process_name="metadata_collection_dag",
             task_id="export_to_bigquery",
-            source_fqn="bigquery:test-project.source.table",
-            target_fqn="bigquery:test-project.target.table",
+            source_targets=[
+                (
+                    "bigquery:test-project.source.table",
+                    "bigquery:test-project.target.table",
+                )
+            ],
             start_time=datetime.now(timezone.utc),
             end_time=datetime.now(timezone.utc),
             is_success=True,

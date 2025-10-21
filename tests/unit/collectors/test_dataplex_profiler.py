@@ -7,6 +7,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 from google.api_core.exceptions import NotFound
+from google.cloud import dataplex_v1
 
 from data_discovery_agent.collectors.dataplex_profiler import DataplexProfiler
 from tests.helpers.fixtures import create_sample_profile_result
@@ -41,6 +42,7 @@ class TestDataplexProfiler:
         # Create mock scan response
         mock_scan = Mock()
         mock_scan.name = "test-scan"
+        mock_scan.state = dataplex_v1.State.ACTIVE
         mock_scan.data_profile_result = create_sample_profile_result()
         mock_client.get_data_scan.return_value = mock_scan
 
@@ -76,6 +78,7 @@ class TestDataplexProfiler:
 
         mock_scan = Mock()
         profile_data = create_sample_profile_result()
+        mock_scan.state = dataplex_v1.State.ACTIVE
         mock_scan.data_profile_result = profile_data
         mock_client.get_data_scan.return_value = mock_scan
 
@@ -84,8 +87,8 @@ class TestDataplexProfiler:
 
         assert result is not None
         assert result["row_count"] == 1000
-        assert "profile" in result
-        assert "fields" in result["profile"]
+        assert "columns" in result
+        assert "id" in result["columns"]
 
     @patch(
         "data_discovery_agent.collectors.dataplex_profiler.dataplex_v1.DataScanServiceClient"
@@ -97,6 +100,7 @@ class TestDataplexProfiler:
 
         mock_scan = Mock()
         profile_data = create_sample_profile_result()
+        mock_scan.state = dataplex_v1.State.ACTIVE
         mock_scan.data_profile_result = profile_data
         mock_client.get_data_scan.return_value = mock_scan
 
@@ -104,14 +108,13 @@ class TestDataplexProfiler:
         result = profiler.get_profile_scan_for_table("test_dataset", "test_table")
 
         assert result is not None
-        fields = result["profile"]["fields"]
-        assert len(fields) > 0
+        columns = result["columns"]
+        assert len(columns) > 0
 
         # Check first field
-        id_field = fields[0]
-        assert id_field["name"] == "id"
-        assert id_field["profile"]["null_ratio"] == 0.0
-        assert id_field["profile"]["distinct_ratio"] == 1.0
+        id_field = columns["id"]
+        assert id_field["null_ratio"] == 0.0
+        assert id_field["distinct_ratio"] == 1.0
 
     @patch(
         "data_discovery_agent.collectors.dataplex_profiler.dataplex_v1.DataScanServiceClient"
@@ -123,6 +126,7 @@ class TestDataplexProfiler:
 
         mock_scan = Mock()
         profile_data = create_sample_profile_result()
+        mock_scan.state = dataplex_v1.State.ACTIVE
         mock_scan.data_profile_result = profile_data
         mock_client.get_data_scan.return_value = mock_scan
 
@@ -130,10 +134,10 @@ class TestDataplexProfiler:
         result = profiler.get_profile_scan_for_table("test_dataset", "test_table")
 
         assert result is not None
-        fields = result["profile"]["fields"]
+        columns = result["columns"]
 
         # Find email field which should have PII detected
-        email_field = next((f for f in fields if f["name"] == "email"), None)
+        email_field = columns.get("email")
         assert email_field is not None
         assert "info_types" in email_field
         assert email_field["info_types"][0]["name"] == "EMAIL_ADDRESS"
@@ -151,7 +155,7 @@ class TestDataplexProfiler:
 
         profiler = DataplexProfiler(project_id="test-project")
 
-        # Should not crash, should return None or handle gracefully
-        with pytest.raises(Exception):
-            profiler.get_profile_scan_for_table("test_dataset", "test_table")
+        # Should not crash, should return None
+        result = profiler.get_profile_scan_for_table("test_dataset", "test_table")
+        assert result is None
 

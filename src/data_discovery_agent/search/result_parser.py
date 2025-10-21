@@ -406,7 +406,7 @@ class SearchResultParser:
             if result.monthly_cost_usd:
                 lines.append(f"| Cost | ${result.monthly_cost_usd:.2f}/month |")
             if result.has_pii:
-                lines.append(f"| Classification | PII |")
+                lines.append("| Classification | PII |")
             lines.append("")
             
             # Snippet

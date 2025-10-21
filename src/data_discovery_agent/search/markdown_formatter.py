@@ -10,7 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from .jsonl_schema import AssetType, BigQueryAssetSchema
+from google.cloud import storage
 
 logger = logging.getLogger(__name__)
 
@@ -31,21 +31,25 @@ class MarkdownFormatter:
     
     def generate_table_report(
         self,
-        asset: BigQueryAssetSchema,
+        asset: Dict[str, Any],
         extended_metadata: Optional[Dict[str, Any]] = None,
     ) -> str:
         """
         Generate comprehensive Markdown report for a BigQuery table.
         
         Args:
-            asset: BigQueryAssetSchema document
-            extended_metadata: Additional metadata not in asset schema
+            asset: BigQuery asset metadata as dictionary
+            extended_metadata: Additional metadata not in asset dict (deprecated, use asset["_extended"])
         
         Returns:
             Markdown formatted report
         """
         
         sections = []
+        
+        # Merge extended metadata for backward compatibility
+        if extended_metadata is None and "_extended" in asset:
+            extended_metadata = asset["_extended"]
         
         # Title and metadata badge
         sections.append(self._generate_header(asset))
@@ -59,22 +63,22 @@ class MarkdownFormatter:
         sections.append(self._generate_metrics_table(asset))
         sections.append("")
         
-        # Description
-        sections.append("## Description")
+        # Overview
+        sections.append("## Overview")
         sections.append("")
-        if extended_metadata and extended_metadata.get("description"):
-            sections.append(extended_metadata["description"])
-        elif asset.content and asset.content.text:
-            # Fallback to extracting from content
-            description = self._extract_description_from_content(asset.content.text)
+        description = asset.get("description", "")
+        if description:
             sections.append(description)
         else:
             sections.append("*No description available for this table.*")
         sections.append("")
         
         # Analytical Insights
-        if extended_metadata and extended_metadata.get("quality_stats") and extended_metadata["quality_stats"].get("insights"):
-            sections.append(self._generate_insights_section(extended_metadata["quality_stats"]["insights"]))
+        insights = asset.get("analytical_insights", [])
+        if not insights and extended_metadata and extended_metadata.get("quality_info"):
+            insights = extended_metadata["quality_info"].get("insights", [])
+        if insights:
+            sections.append(self._generate_insights_section(insights))
             sections.append("")
         
         # Schema
@@ -86,32 +90,37 @@ class MarkdownFormatter:
         sections.append("")
         
         # Cost Analysis
-        if asset.struct_data.monthly_cost_usd:
-            sections.append(self._generate_cost_section(asset))
+        cost_info = extended_metadata.get("cost_info") if extended_metadata else None
+        if cost_info and cost_info.get("total_monthly_cost_usd"):
+            sections.append(self._generate_cost_section(asset, cost_info))
             sections.append("")
         
         # Data Quality
-        if asset.struct_data.completeness_score or asset.struct_data.freshness_score or (extended_metadata and extended_metadata.get("quality_stats")):
-            sections.append(self._generate_quality_section(asset, extended_metadata))
+        quality_info = extended_metadata.get("quality_info") if extended_metadata else None
+        if quality_info:
+            sections.append(self._generate_quality_section(asset, quality_info))
             sections.append("")
         
         # Column Profiling
-        if extended_metadata and extended_metadata.get("column_profiles"):
-            sections.append(self._generate_column_profiles_section(extended_metadata["column_profiles"]))
+        column_profiles = None
+        if extended_metadata and "column_profiles" in extended_metadata:
+            column_profiles = extended_metadata["column_profiles"]
+        elif extended_metadata and extended_metadata.get("quality_info"):
+            column_profiles = extended_metadata["quality_info"].get("column_profiles")
+        if column_profiles:
+            sections.append(self._generate_column_profiles_section(column_profiles))
             sections.append("")
         
-        # Lineage - ALWAYS show, check both struct_data and extended_metadata
-        lineage_data = None
-        if asset.struct_data and hasattr(asset.struct_data, 'lineage') and asset.struct_data.lineage:
-            lineage_data = asset.struct_data.lineage
+        # Lineage - ALWAYS show
+        lineage_info = None
+        if extended_metadata and "lineage_info" in extended_metadata:
+            lineage_info = extended_metadata["lineage_info"]
         elif extended_metadata and "lineage" in extended_metadata:
-            lineage_data = extended_metadata["lineage"]
-        elif extended_metadata and "lineage_info" in extended_metadata:
-            lineage_data = extended_metadata["lineage_info"]
+            lineage_info = extended_metadata["lineage"]
         
         # Always generate lineage section, even if empty
-        if lineage_data is not None:
-            sections.append(self._generate_lineage_section(lineage_data))
+        if lineage_info is not None:
+            sections.append(self._generate_lineage_section(lineage_info))
         else:
             # No lineage data at all - generate empty section
             sections.append(self._generate_lineage_section({"upstream_tables": [], "downstream_tables": []}))
@@ -127,31 +136,32 @@ class MarkdownFormatter:
         
         return "\n".join(sections)
     
-    def _generate_header(self, asset: BigQueryAssetSchema) -> str:
+    def _generate_header(self, asset: Dict[str, Any]) -> str:
         """Generate report header with title and badges"""
         
-        table_name = f"{asset.struct_data.dataset_id}.{asset.struct_data.table_id}"
+        table_name = f"{asset.get('dataset_id', 'unknown')}.{asset.get('table_id', 'unknown')}"
         
         badges = []
         
         # Asset type badge (ASCII-only)
-        badges.append(f"[{asset.struct_data.asset_type.upper()}]")
+        table_type = asset.get("table_type", "TABLE")
+        badges.append(f"[{table_type.upper()}]")
         
         # Security badges
-        if asset.struct_data.has_pii:
+        if asset.get("has_pii", False):
             badges.append("[PII]")
-        if asset.struct_data.has_phi:
+        if asset.get("has_phi", False):
             badges.append("[PHI]")
         
         # Environment badge
-        env = asset.struct_data.environment or "unknown"
+        env = asset.get("environment", "unknown")
         badges.append(f"[{env.upper()}]")
         
         badge_line = " | ".join(badges)
         
         return f"# {table_name}\n\n{badge_line}"
     
-    def _generate_summary(self, asset: BigQueryAssetSchema) -> str:
+    def _generate_summary(self, asset: Dict[str, Any]) -> str:
         """Generate executive summary"""
         
         lines = []
@@ -161,17 +171,13 @@ class MarkdownFormatter:
         # Quick facts
         facts = []
         
-        if asset.struct_data.row_count:
-            facts.append(f"**{asset.struct_data.row_count:,}** rows")
+        row_count = asset.get("row_count")
+        if row_count:
+            facts.append(f"**{row_count:,}** rows")
         
-        if asset.struct_data.size_bytes:
-            facts.append(f"**{self._format_size(asset.struct_data.size_bytes)}**")
-        
-        if asset.struct_data.column_count:
-            facts.append(f"**{asset.struct_data.column_count}** columns")
-        
-        if asset.struct_data.monthly_cost_usd:
-            facts.append(f"**${asset.struct_data.monthly_cost_usd:.2f}/month**")
+        size_bytes = asset.get("size_bytes")
+        if size_bytes:
+            facts.append(f"**{self._format_size(size_bytes)}**")
         
         if facts:
             lines.append(" - ".join(facts))
@@ -180,21 +186,16 @@ class MarkdownFormatter:
         # Key attributes
         attributes = []
         
-        if asset.struct_data.owner_email:
-            attributes.append(f"**Owner**: {asset.struct_data.owner_email}")
-        
-        if asset.struct_data.team:
-            attributes.append(f"**Team**: {asset.struct_data.team}")
-        
-        if asset.struct_data.last_modified_timestamp:
-            attributes.append(f"**Last Modified**: {self._format_date(asset.struct_data.last_modified_timestamp)}")
+        last_modified = asset.get("last_modified")
+        if last_modified:
+            attributes.append(f"**Last Modified**: {self._format_date(last_modified)}")
         
         if attributes:
             lines.extend(attributes)
         
         return "\n".join(lines)
     
-    def _generate_metrics_table(self, asset: BigQueryAssetSchema) -> str:
+    def _generate_metrics_table(self, asset: Dict[str, Any]) -> str:
         """Generate key metrics table"""
         
         lines = []
@@ -205,29 +206,32 @@ class MarkdownFormatter:
         
         metrics = []
         
-        if asset.struct_data.row_count is not None:
-            metrics.append(("Row Count", f"{asset.struct_data.row_count:,}"))
+        row_count = asset.get("row_count")
+        if row_count is not None:
+            metrics.append(("Row Count", f"{row_count:,}"))
         
-        if asset.struct_data.size_bytes is not None:
-            metrics.append(("Size", self._format_size(asset.struct_data.size_bytes)))
+        size_bytes = asset.get("size_bytes")
+        if size_bytes is not None:
+            metrics.append(("Size", self._format_size(size_bytes)))
         
-        if asset.struct_data.column_count is not None:
-            metrics.append(("Columns", str(asset.struct_data.column_count)))
+        column_count = asset.get("column_count")
+        if column_count is not None:
+            metrics.append(("Columns", str(column_count)))
         
-        if asset.struct_data.created_timestamp:
-            metrics.append(("Created", self._format_date(asset.struct_data.created_timestamp)))
+        created = asset.get("created")
+        if created:
+            metrics.append(("Created", self._format_date(created)))
         
-        if asset.struct_data.last_modified_timestamp:
-            metrics.append(("Last Modified", self._format_date(asset.struct_data.last_modified_timestamp)))
+        last_modified = asset.get("last_modified")
+        if last_modified:
+            metrics.append(("Last Modified", self._format_date(last_modified)))
         
-        if asset.struct_data.last_accessed_timestamp:
-            metrics.append(("Last Accessed", self._format_date(asset.struct_data.last_accessed_timestamp)))
+        last_accessed = asset.get("last_accessed")
+        if last_accessed:
+            metrics.append(("Last Accessed", self._format_date(last_accessed)))
         
-        if asset.struct_data.volatility:
-            metrics.append(("Volatility", asset.struct_data.volatility.upper()))
-        
-        if asset.struct_data.cache_ttl:
-            metrics.append(("Cache TTL", asset.struct_data.cache_ttl))
+        # Volatility and cache TTL would be in extended metadata if needed
+        # But they're not critical for display
         
         for name, value in metrics:
             lines.append(f"| {name} | {value} |")
@@ -235,7 +239,7 @@ class MarkdownFormatter:
         return "\n".join(lines)
     
     def _generate_schema_section(
-        self, asset: BigQueryAssetSchema, extended_metadata: Optional[Dict[str, Any]]
+        self, asset: Dict[str, Any], extended_metadata: Optional[Dict[str, Any]]
     ) -> str:
         """Generate schema section with sample values"""
         
@@ -243,37 +247,31 @@ class MarkdownFormatter:
         lines.append("## Schema")
         lines.append("")
         
-        # Extract schema from multiple sources (prioritize extended_metadata, then struct_data)
-        schema = None
+        # Extract schema
+        schema = asset.get("schema", [])
         sample_values = {}
         
-        # First, try extended_metadata
-        if extended_metadata and "schema" in extended_metadata:
-            schema = extended_metadata["schema"]
-        # If not in extended_metadata, check asset.struct_data.schema_info
-        elif asset.struct_data.schema_info:
-            schema = asset.struct_data.schema_info
+        # Get sample values from extended metadata
+        if extended_metadata and "quality_info" in extended_metadata:
+            quality_info = extended_metadata["quality_info"]
+            if isinstance(quality_info, dict) and "sample_values" in quality_info:
+                sample_values = quality_info["sample_values"]
         
-        # Get sample values from extended metadata or quality_stats
-        if extended_metadata and "quality_stats" in extended_metadata:
-            quality_stats = extended_metadata["quality_stats"]
-            if isinstance(quality_stats, dict) and "sample_values" in quality_stats:
-                sample_values = quality_stats["sample_values"]
-        elif asset.struct_data.quality_stats and isinstance(asset.struct_data.quality_stats, dict):
-            sample_values = asset.struct_data.quality_stats.get("sample_values", {})
-        
-        if schema and "fields" in schema:
+        if schema:
             lines.append("| Column | Type | Mode | Description | Sample Values |")
             lines.append("|--------|------|------|-------------|---------------|")
             
-            for field in schema["fields"]:
+            for field in schema:
                 name = field.get("name", "")
                 type_ = field.get("type", "")
                 mode = field.get("mode", "NULLABLE")
                 description = field.get("description", "")
                 
                 # Get sample values for this column
-                samples = sample_values.get(name, [])
+                samples = []
+                if isinstance(sample_values, dict):
+                    samples = sample_values.get(name, [])
+                
                 if samples:
                     # Truncate long values and join
                     samples_display = ", ".join([str(s)[:30] for s in samples[:3]])
@@ -288,13 +286,14 @@ class MarkdownFormatter:
                 
                 lines.append(f"| {name} | {type_} | {mode} | {description} | {samples_display} |")
         else:
-            lines.append(f"*Schema contains {asset.struct_data.column_count or 'unknown'} columns*")
+            column_count = asset.get("column_count", "unknown")
+            lines.append(f"*Schema contains {column_count} columns*")
             lines.append("")
             lines.append("Run full discovery to see detailed schema information.")
         
         return "\n".join(lines)
     
-    def _generate_governance_section(self, asset: BigQueryAssetSchema) -> str:
+    def _generate_governance_section(self, asset: Dict[str, Any]) -> str:
         """Generate security and governance section"""
         
         lines = []
@@ -305,9 +304,9 @@ class MarkdownFormatter:
         
         # Data classification
         classifications = []
-        if asset.struct_data.has_pii:
+        if asset.get("has_pii", False):
             classifications.append("**PII** (Personally Identifiable Information)")
-        if asset.struct_data.has_phi:
+        if asset.get("has_phi", False):
             classifications.append("**PHI** (Protected Health Information)")
         
         if classifications:
@@ -315,24 +314,17 @@ class MarkdownFormatter:
         else:
             governance_items.append(("Data Classification", "No sensitive data detected"))
         
-        # Encryption
-        if asset.struct_data.encryption_type:
-            governance_items.append(("Encryption", asset.struct_data.encryption_type))
-        
-        # Ownership
-        if asset.struct_data.owner_email:
-            governance_items.append(("Owner", asset.struct_data.owner_email))
-        
-        if asset.struct_data.team:
-            governance_items.append(("Team", asset.struct_data.team))
-        
         # Environment
-        governance_items.append(("Environment", (asset.struct_data.environment or "unknown").upper()))
+        env = asset.get("environment", "unknown")
+        governance_items.append(("Environment", env.upper()))
         
-        # Tags
-        if asset.struct_data.tags:
-            tags_str = ", ".join(f"`{tag}`" for tag in asset.struct_data.tags)
-            governance_items.append(("Tags", tags_str))
+        # Tags from labels
+        labels = asset.get("labels", [])
+        if labels:
+            tags = [label.get("key", "") for label in labels if isinstance(label, dict)]
+            if tags:
+                tags_str = ", ".join(f"`{tag}`" for tag in tags)
+                governance_items.append(("Tags", tags_str))
         
         # Render as list
         for label, value in governance_items:
@@ -340,16 +332,16 @@ class MarkdownFormatter:
         
         return "\n".join(lines)
     
-    def _generate_cost_section(self, asset: BigQueryAssetSchema) -> str:
+    def _generate_cost_section(self, asset: Dict[str, Any], cost_info: Dict[str, Any]) -> str:
         """Generate cost analysis section"""
         
         lines = []
         lines.append("## Cost Analysis")
         lines.append("")
         
-        monthly_cost = asset.struct_data.monthly_cost_usd
-        storage_cost = asset.struct_data.storage_cost_usd
-        query_cost = asset.struct_data.query_cost_usd
+        monthly_cost = cost_info.get("total_monthly_cost_usd", 0)
+        storage_cost = cost_info.get("storage_cost_usd")
+        query_cost = cost_info.get("query_cost_usd")
         
         lines.append(f"**Total Monthly Cost**: ${monthly_cost:.2f}")
         lines.append("")
@@ -366,15 +358,16 @@ class MarkdownFormatter:
             lines.append(f"| **Total** | **${monthly_cost:.2f}** |")
         
         # Cost per GB
-        if asset.struct_data.size_bytes and monthly_cost:
-            size_gb = asset.struct_data.size_bytes / (1024**3)
+        size_bytes = asset.get("size_bytes")
+        if size_bytes and monthly_cost:
+            size_gb = size_bytes / (1024**3)
             cost_per_gb = monthly_cost / size_gb if size_gb > 0 else 0
             lines.append("")
             lines.append(f"*Cost per GB*: ${cost_per_gb:.2f}")
         
         return "\n".join(lines)
     
-    def _generate_quality_section(self, asset: BigQueryAssetSchema, extended_metadata: Optional[Dict[str, Any]] = None) -> str:
+    def _generate_quality_section(self, asset: Dict[str, Any], quality_info: Optional[Dict[str, Any]] = None) -> str:
         """Generate data quality section"""
         
         lines = []
@@ -383,46 +376,48 @@ class MarkdownFormatter:
         
         metrics = []
         
-        if asset.struct_data.completeness_score is not None:
-            score = asset.struct_data.completeness_score * 100
-            status = "GOOD" if score >= 95 else "FAIR" if score >= 80 else "POOR"
-            metrics.append(f"**Completeness**: {score:.1f}% [{status}]")
-        
-        if asset.struct_data.freshness_score is not None:
-            score = asset.struct_data.freshness_score * 100
-            status = "GOOD" if score >= 95 else "FAIR" if score >= 80 else "POOR"
-            metrics.append(f"**Freshness**: {score:.1f}% [{status}]")
+        # Completeness and freshness scores (if available)
+        if quality_info:
+            completeness = quality_info.get("completeness_score")
+            if completeness is not None:
+                score = completeness * 100
+                status = "GOOD" if score >= 95 else "FAIR" if score >= 80 else "POOR"
+                metrics.append(f"**Completeness**: {score:.1f}% [{status}]")
+            
+            freshness = quality_info.get("freshness_score")
+            if freshness is not None:
+                score = freshness * 100
+                status = "GOOD" if score >= 95 else "FAIR" if score >= 80 else "POOR"
+                metrics.append(f"**Freshness**: {score:.1f}% [{status}]")
         
         # Add null statistics if available
-        if extended_metadata and "quality_stats" in extended_metadata:
-            quality_stats = extended_metadata["quality_stats"]
-            if quality_stats and "columns" in quality_stats:
-                lines.append("### Null Statistics")
-                lines.append("")
-                lines.append("| Column | Null Count | Null % |")
-                lines.append("|--------|------------|--------|")
-                
-                # Sort by null percentage (highest first)
-                sorted_cols = sorted(
-                    quality_stats["columns"].items(),
-                    key=lambda x: x[1].get("null_percentage", 0),
-                    reverse=True
-                )
-                
-                # Show top 20 columns with highest null percentage
-                for col_name, stats in sorted_cols[:20]:
-                    null_count = stats.get("null_count", 0)
-                    null_pct = stats.get("null_percentage", 0.0)
-                    lines.append(f"| {col_name} | {null_count:,} | {null_pct:.1f}% |")
-                
-                if len(sorted_cols) > 20:
-                    lines.append(f"| *...and {len(sorted_cols) - 20} more columns* | | |")
-                
-                lines.append("")
+        if quality_info and "columns" in quality_info:
+            lines.append("### Null Statistics")
+            lines.append("")
+            lines.append("| Column | Null Count | Null % |")
+            lines.append("|--------|------------|--------|")
+            
+            # Sort by null percentage (highest first)
+            sorted_cols = sorted(
+                quality_info["columns"].items(),
+                key=lambda x: x[1].get("null_percentage", 0),
+                reverse=True
+            )
+            
+            # Show top 20 columns with highest null percentage
+            for col_name, stats in sorted_cols[:20]:
+                null_count = stats.get("null_count", 0)
+                null_pct = stats.get("null_percentage", 0.0)
+                lines.append(f"| {col_name} | {null_count:,} | {null_pct:.1f}% |")
+            
+            if len(sorted_cols) > 20:
+                lines.append(f"| *...and {len(sorted_cols) - 20} more columns* | | |")
+            
+            lines.append("")
         
         if metrics:
             lines.extend(metrics)
-        elif not (extended_metadata and "quality_stats" in extended_metadata):
+        elif not quality_info:
             lines.append("*No quality metrics available*")
         
         return "\n".join(lines)
@@ -497,15 +492,23 @@ class MarkdownFormatter:
         
         return "\n".join(lines)
     
-    def _generate_footer(self, asset: BigQueryAssetSchema) -> str:
+    def _generate_footer(self, asset: Dict[str, Any]) -> str:
         """Generate report footer"""
         
         lines = []
         lines.append("---")
         lines.append("")
-        lines.append(f"*Report generated at {asset.struct_data.indexed_at}*")
+        
+        # Generate timestamp
+        from datetime import datetime, timezone
+        timestamp = datetime.now(timezone.utc).isoformat()
+        lines.append(f"*Report generated at {timestamp}*")
         lines.append("")
-        lines.append(f"**Full Path**: `{asset.struct_data.project_id}.{asset.struct_data.dataset_id}.{asset.struct_data.table_id}`")
+        
+        project_id = asset.get("project_id", "unknown")
+        dataset_id = asset.get("dataset_id", "unknown")
+        table_id = asset.get("table_id", "unknown")
+        lines.append(f"**Full Path**: `{project_id}.{dataset_id}.{table_id}`")
         lines.append("")
         lines.append("*This report is generated from cached metadata. For real-time information, query the live system.*")
         
@@ -655,7 +658,6 @@ class MarkdownFormatter:
         Returns:
             GCS URI of exported file
         """
-        from google.cloud import storage
         
         storage_client = storage.Client()
         bucket = storage_client.bucket(gcs_bucket)

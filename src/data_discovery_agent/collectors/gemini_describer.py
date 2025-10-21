@@ -68,7 +68,13 @@ class GeminiDescriber:
         except Exception as e:
             logger.error(f"Failed to initialize Gemini: {e}")
             self.enabled = False
-    
+        print(f"GeminiDescriber initialized with enabled={self.enabled}")
+
+    @property
+    def is_enabled(self) -> bool:
+        """Check if the Gemini client is enabled."""
+        return self.enabled
+
     def _call_with_retry(self, prompt: str, context: str) -> Optional[Any]:
         """
         Call Gemini API with retry logic for rate limit errors.
@@ -199,7 +205,7 @@ class GeminiDescriber:
         parts = []
         
         # Header
-        parts.append(f"Analyze the following BigQuery table and generate a concise, informative description.")
+        parts.append("Analyze the following BigQuery table and generate a concise, informative description.")
         parts.append(f"\n**Table Name:** {table_name}\n")
         
         # Statistics
@@ -348,7 +354,6 @@ class GeminiDescriber:
                     # Try to match numbered pattern
                     match = re.match(numbered_pattern, stripped)
                     if match:
-                        question_number = int(match.group(1))
                         question_text = match.group(2).strip()
                         
                         # Clean up the question text

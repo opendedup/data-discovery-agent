@@ -153,7 +153,7 @@ async def main() -> None:
         config = load_config()
         
         logger.info(f"Starting MCP server: {config.mcp_server_name} v{config.mcp_server_version}")
-        logger.info(f"Transport: stdio")
+        logger.info("Transport: stdio")
         logger.info(f"Project: {config.project_id}")
         logger.info(f"Vertex AI Datastore: {config.vertex_datastore_id}")
         logger.info(f"Reports Bucket: {config.reports_bucket}")

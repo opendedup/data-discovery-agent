@@ -8,7 +8,7 @@ from unittest.mock import Mock
 
 from google.cloud import bigquery
 
-from data_discovery_agent.search.jsonl_schema import BigQueryAssetSchema
+# Removed deprecated imports - using plain dicts now
 
 
 def create_mock_dataset(
@@ -117,9 +117,9 @@ def create_sample_asset_schema(
     dataset_id: str = "test_dataset",
     table_id: str = "test_table",
     description: str = "Sample test table for unit testing purposes",
-) -> BigQueryAssetSchema:
+) -> Dict[str, Any]:
     """
-    Create a sample BigQueryAssetSchema for testing.
+    Create a sample asset dict for testing.
     
     Args:
         project_id: Project ID
@@ -128,46 +128,59 @@ def create_sample_asset_schema(
         description: Table description
         
     Returns:
-        BigQueryAssetSchema instance
+        Dict representing a BigQuery asset
     """
-    return BigQueryAssetSchema(
-        id=f"{project_id}.{dataset_id}.{table_id}",
-        content={
-            "mimeType": "text/plain",
-            "representation": "document",
+    schema_fields = [
+        {
+            "name": "id",
+            "type": "STRING",
+            "mode": "REQUIRED",
+            "description": "Unique identifier for the record",
         },
-        structData={
-            "project_id": project_id,
-            "dataset_id": dataset_id,
-            "table_id": table_id,
-            "table_type": "TABLE",
-            "description": description,
-            "row_count": 1000,
-            "size_bytes": 50000,
-            "created_time": "2024-01-01T00:00:00Z",
-            "modified_time": "2024-10-20T00:00:00Z",
-            "schema": [
-                {
-                    "column_name": "id",
-                    "column_type": "STRING",
-                    "column_mode": "REQUIRED",
-                    "column_description": "Unique identifier for the record",
-                },
-                {
-                    "column_name": "name",
-                    "column_type": "STRING",
-                    "column_mode": "NULLABLE",
-                    "column_description": "Name of the entity",
-                },
-                {
-                    "column_name": "created_at",
-                    "column_type": "TIMESTAMP",
-                    "column_mode": "NULLABLE",
-                    "column_description": "Timestamp when the record was created",
-                },
-            ],
+        {
+            "name": "name",
+            "type": "STRING",
+            "mode": "NULLABLE",
+            "description": "Name of the entity",
         },
-    )
+        {
+            "name": "created_at",
+            "type": "TIMESTAMP",
+            "mode": "NULLABLE",
+            "description": "Timestamp when the record was created",
+        },
+    ]
+
+    return {
+        "project_id": project_id,
+        "dataset_id": dataset_id,
+        "table_id": table_id,
+        "description": description,
+        "table_type": "TABLE",
+        "created": "2024-01-01T00:00:00Z",
+        "last_modified": "2024-10-20T00:00:00Z",
+        "last_accessed": None,
+        "row_count": 1000,
+        "column_count": 3,
+        "size_bytes": 50000,
+        "has_pii": False,
+        "has_phi": False,
+        "environment": "test",
+        "labels": [],
+        "schema": schema_fields,
+        "analytical_insights": [],
+        "lineage": [],
+        "column_profiles": [],
+        "key_metrics": [],
+        "_extended": {
+            "schema_info": {"fields": schema_fields},
+            "lineage_info": {"upstream_tables": [], "downstream_tables": []},
+            "cost_info": {},
+            "quality_info": {},
+            "security_info": {"has_pii": False, "has_phi": False},
+            "governance_info": {"labels": {}, "tags": [], "environment": "test"},
+        }
+    }
 
 
 def create_sample_profile_result() -> Dict[str, Any]:

@@ -82,9 +82,7 @@ class TestOrchestrationTasks:
 
         # Setup XCom pull to return assets
         assets = [create_sample_asset_schema()]
-        mock_airflow_context["ti"].xcom_pull.return_value = [
-            asset.model_dump() for asset in assets
-        ]
+        mock_airflow_context["ti"].xcom_pull.return_value = assets
 
         # Run task
         export_to_bigquery_task(**mock_airflow_context)
@@ -112,14 +110,13 @@ class TestOrchestrationTasks:
         mock_writer_class.return_value = mock_writer
 
         assets = [create_sample_asset_schema()]
-        mock_airflow_context["ti"].xcom_pull.return_value = [
-            asset.model_dump() for asset in assets
-        ]
+        mock_airflow_context["ti"].xcom_pull.return_value = assets
 
         export_to_bigquery_task(**mock_airflow_context)
 
         # Lineage should be recorded
         # (May be called inside writer or in task function)
+        assert mock_writer.write_to_bigquery.called
 
     @patch("data_discovery_agent.orchestration.tasks.MarkdownFormatter")
     @patch("data_discovery_agent.orchestration.tasks.storage.Client")
@@ -134,7 +131,8 @@ class TestOrchestrationTasks:
         # Mock formatter
         mock_formatter = Mock()
         mock_formatter_class.return_value = mock_formatter
-        mock_formatter.format_table_markdown.return_value = "# Test Markdown"
+        mock_formatter.generate_table_report.return_value = "# Test Markdown"
+        mock_formatter.export_to_gcs.return_value = "gs://some/path"
 
         # Mock storage client
         mock_storage = Mock()
@@ -143,7 +141,7 @@ class TestOrchestrationTasks:
         # Setup XCom pull
         assets = [create_sample_asset_schema()]
         mock_airflow_context["ti"].xcom_pull.side_effect = [
-            [asset.model_dump() for asset in assets],  # assets
+            assets,  # assets
             "20241020_120000",  # run_timestamp
         ]
 
@@ -151,10 +149,10 @@ class TestOrchestrationTasks:
         export_markdown_reports_task(**mock_airflow_context)
 
         # Verify formatter was called
-        assert mock_formatter.format_table_markdown.called
+        assert mock_formatter.generate_table_report.called
 
         # Verify storage upload was attempted
-        assert mock_storage.bucket.called
+        assert mock_formatter.export_to_gcs.called
 
     @patch("data_discovery_agent.orchestration.tasks.VertexSearchClient")
     def test_import_to_vertex_ai_task(
@@ -232,14 +230,15 @@ class TestOrchestrationTasks:
         """Test that markdown reports use correct GCS path structure."""
         mock_formatter = Mock()
         mock_formatter_class.return_value = mock_formatter
-        mock_formatter.format_table_markdown.return_value = "# Test"
+        mock_formatter.generate_table_report.return_value = "# Test"
+        mock_formatter.export_to_gcs.return_value = "gs://test-bucket/reports/20241020_120000/test-project/test_dataset/test_table.md"
 
         mock_storage = Mock()
         mock_storage_class.return_value = mock_storage
 
         asset = create_sample_asset_schema()
         mock_airflow_context["ti"].xcom_pull.side_effect = [
-            [asset.model_dump()],
+            [asset],
             "20241020_120000",
         ]
 
@@ -247,6 +246,12 @@ class TestOrchestrationTasks:
 
         # Verify path format: {run_timestamp}/{project}/{dataset}/{table}.md
         # Check blob path if storage was called
+        mock_formatter.export_to_gcs.assert_called_once()
+        call_args = mock_formatter.export_to_gcs.call_args[1]
+        assert "gcs_path" in call_args
+        gcs_path = call_args["gcs_path"]
+        assert "reports/20241020_120000/test-project/test_dataset/test_table.md" in gcs_path
+
 
     @patch("data_discovery_agent.orchestration.tasks.BigQueryWriter")
     def test_export_adds_run_timestamp(
@@ -260,9 +265,7 @@ class TestOrchestrationTasks:
         mock_writer_class.return_value = mock_writer
 
         assets = [create_sample_asset_schema()]
-        mock_airflow_context["ti"].xcom_pull.return_value = [
-            asset.model_dump() for asset in assets
-        ]
+        mock_airflow_context["ti"].xcom_pull.return_value = assets
 
         export_to_bigquery_task(**mock_airflow_context)
 

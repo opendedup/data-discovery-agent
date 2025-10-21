@@ -37,7 +37,7 @@ class BigQueryWriter:
         self.dag_name = dag_name or os.getenv("AIRFLOW_CTX_DAG_ID", "metadata_collection")
         self.task_id = task_id or os.getenv("AIRFLOW_CTX_TASK_ID", "export_to_bigquery")
 
-    def _get_bigquery_schema(self):
+    def get_bigquery_schema(self):
         return [
             bigquery.SchemaField("table_id", "STRING", "REQUIRED", description="The ID of the BigQuery table."),
             bigquery.SchemaField("project_id", "STRING", description="The GCP project ID containing the table."),
@@ -86,7 +86,7 @@ class BigQueryWriter:
             bigquery.SchemaField("insert_timestamp", "TIMESTAMP", "REQUIRED", description="The UTC timestamp when this metadata record was inserted."),
         ]
 
-    def _ensure_dataset_exists(self):
+    def _create_dataset_if_not_exists(self):
         """Creates the BigQuery dataset if it does not already exist."""
         dataset_ref = self.client.dataset(self.dataset_id)
         try:
@@ -99,6 +99,24 @@ class BigQueryWriter:
             dataset.location = self.location
             self.client.create_dataset(dataset, exists_ok=True)
             logger.info(f"Dataset {self.dataset_id} created in location {dataset.location}.")
+
+    def _create_table_if_not_exists(self) -> None:
+        """Creates the BigQuery table if it does not exist."""
+        table_ref = self.client.dataset(self.dataset_id).table(self.table_id)
+        try:
+            self.client.get_table(table_ref)
+            logger.info(f"Table {self.table_id} already exists.")
+        except NotFound:
+            logger.info(f"Table {self.table_id} not found, creating it.")
+            schema = self.get_bigquery_schema()
+            table = bigquery.Table(table_ref, schema=schema)
+            table.description = "A centralized catalog of discovered BigQuery assets, including metadata, schema, lineage, and profiling information."
+            table.time_partitioning = bigquery.TimePartitioning(
+                type_=bigquery.TimePartitioningType.DAY,
+                field="insert_timestamp"
+            )
+            self.client.create_table(table, exists_ok=True)
+            logger.info(f"Table {self.table_id} created.")
 
     def _create_or_update_latest_view(self):
         """Creates or replaces a view that points to the latest run."""
@@ -127,165 +145,72 @@ class BigQueryWriter:
             pass
 
 
-    def write_to_bigquery(self, assets: List[Dict[str, Any]]):
+    def write_to_bigquery(self, assets: list[dict[str, Any]]) -> None:
         """
-        Writes discovered asset metadata to BigQuery and records lineage.
-        
+        Write a batch of assets to BigQuery.
+
         Args:
-            assets: List of asset dictionaries containing metadata
+            assets: List of asset dictionaries to write
         """
         start_time = datetime.now(timezone.utc)
         is_success = False
-        source_tables = []
         
         try:
-            self._ensure_dataset_exists()
-            table_ref = self.client.dataset(self.dataset_id).table(self.table_id)
+            self.run_timestamp = datetime.now(timezone.utc)
+            logger.info(f"Starting BigQuery write operation for {len(assets)} assets.")
+            logger.info(f"Run timestamp: {self.run_timestamp.isoformat()}")
 
-            schema = self._get_bigquery_schema()
-            table = bigquery.Table(table_ref, schema=schema)
-            table.description = "A centralized catalog of discovered BigQuery assets, including metadata, schema, lineage, and profiling information."
-            table.time_partitioning = bigquery.TimePartitioning(
-                type_=bigquery.TimePartitioningType.DAY,
-                field="insert_timestamp"
-            )
-            table = self.client.create_table(table, exists_ok=True)
-            logger.info(f"Ensured BigQuery table {table.project}.{table.dataset_id}.{table.table_id} exists.")
+            # Ensure dataset and table exist
+            self._create_dataset_if_not_exists()
+            self._create_table_if_not_exists()
 
-            rows_to_insert = []
+            # Prepare rows for insertion (create copies to avoid mutating originals)
+            rows = []
             for asset in assets:
-                struct_data = asset.get("struct_data", {})
-                quality_stats = struct_data.get("quality_stats", {}) or {}
-                schema_info = struct_data.get("schema_info", {}) or {}
+                # Create a shallow copy of the dict
+                row = dict(asset)
                 
-                # Handle asset_type -> table_type conversion
-                # Try to get table_type first, then asset_type, default to TABLE
-                table_type = struct_data.get("table_type")
-                if not table_type:
-                    asset_type = struct_data.get("asset_type")
-                    if asset_type:
-                        # Handle enum or string
-                        table_type = asset_type if isinstance(asset_type, str) else str(asset_type)
+                # Remove _extended metadata (not stored in BigQuery)
+                row.pop('_extended', None)
+                
+                # Add timestamps
+                row['insert_timestamp'] = self.run_timestamp.isoformat()
+                if 'run_timestamp' not in row:
+                    row['run_timestamp'] = self.run_timestamp.isoformat()
+                
+                rows.append(row)
+
+            # Insert rows in batches
+            batch_size = 100
+            for i in range(0, len(rows), batch_size):
+                batch = rows[i : i + batch_size]
+                try:
+                    errors = self.client.insert_rows_json(
+                        self.client.dataset(self.dataset_id).table(self.table_id),
+                        batch,
+                    )
+                    if errors:
+                        logger.error(f"Encountered errors while inserting rows: {errors}")
                     else:
-                        # Default to TABLE if neither field exists
-                        table_type = "TABLE"
-                        logger.warning(f"No table_type or asset_type found for {struct_data.get('table_id')}, defaulting to TABLE")
-                
-                # Track source table for lineage
-                table_full_name = f"{struct_data.get('project_id')}.{struct_data.get('dataset_id')}.{struct_data.get('table_id')}"
-                if table_full_name and table_full_name not in source_tables:
-                    source_tables.append(table_full_name)
-                
-                # Prepare schema with sample values
-                schema_fields = []
-                if schema_info and "fields" in schema_info:
-                    sample_values = quality_stats.get("sample_values", {})
-                    for field in schema_info["fields"]:
-                        field_name = field.get("name")
-                        schema_fields.append({
-                            "name": field_name,
-                            "type": field.get("type"),
-                            "mode": field.get("mode"),
-                            "description": field.get("description"),
-                            "sample_values": sample_values.get(field_name, [])
-                        })
+                        logger.info(f"Successfully inserted {len(batch)} rows.")
+                except Exception as e:
+                    logger.error(f"Failed to insert batch {i//batch_size}: {e}")
 
-                # Prepare column profiles
-                column_profiles_raw = struct_data.get("column_profiles", {})
-                column_profiles = []
-                if column_profiles_raw:
-                    for col_name, profile in column_profiles_raw.items():
-                        column_profiles.append({
-                            "column_name": col_name,
-                            "profile_type": profile.get("type"),
-                            "min_value": str(profile.get("min", "")),
-                            "max_value": str(profile.get("max", "")),
-                            "avg_value": str(profile.get("avg", "")),
-                            "distinct_count": profile.get("distinct_count"),
-                            "null_percentage": quality_stats.get("columns", {}).get(col_name, {}).get("null_percentage")
-                        })
-                
-                # Prepare key metrics
-                key_metrics = []
-                if completeness := quality_stats.get("completeness_score"):
-                    key_metrics.append({"metric_name": "completeness_score", "metric_value": str(completeness)})
-                if freshness := quality_stats.get("freshness_score"):
-                    key_metrics.append({"metric_name": "freshness_score", "metric_value": str(freshness)})
-                if volatility := struct_data.get("volatility"):
-                    key_metrics.append({"metric_name": "volatility", "metric_value": volatility})
-                if cache_ttl := struct_data.get("cache_ttl"):
-                    key_metrics.append({"metric_name": "cache_ttl", "metric_value": cache_ttl})
-
-                # Prepare lineage - always present even if empty, to indicate lineage was checked
-                lineage = []
-                lineage_raw = struct_data.get("lineage_info") or struct_data.get("lineage") or {}
-                
-                # Debug logging
-                table_id_debug = struct_data.get("table_id")
-                if lineage_raw:
-                    upstream_count = len(lineage_raw.get("upstream_tables", []))
-                    downstream_count = len(lineage_raw.get("downstream_tables", []))
-                    if upstream_count > 0 or downstream_count > 0:
-                        logger.info(f"Processing lineage for {table_id_debug}: {upstream_count} upstream, {downstream_count} downstream")
-                
-                # Build upstream lineage
-                for upstream_table in lineage_raw.get("upstream_tables", []):
-                    lineage.append({"source": upstream_table, "target": table_full_name})
-                
-                # Build downstream lineage
-                for downstream_table in lineage_raw.get("downstream_tables", []):
-                    lineage.append({"source": table_full_name, "target": downstream_table})
-                
-                # Log final lineage count
-                if lineage:
-                    logger.info(f"Prepared {len(lineage)} lineage entries for {table_id_debug}")
-                
-                # If no lineage entries were found, the empty list explicitly indicates lineage was checked but none found
-
-                rows_to_insert.append({
-                    "table_id": struct_data.get("table_id"),
-                    "project_id": struct_data.get("project_id"),
-                    "dataset_id": struct_data.get("dataset_id"),
-                    "description": struct_data.get("description"),
-                    "table_type": table_type,
-                    "created": struct_data.get("created_timestamp"),
-                    "last_modified": struct_data.get("last_modified_timestamp"),
-                    "last_accessed": struct_data.get("last_accessed_timestamp"),
-                    "row_count": struct_data.get("row_count"),
-                    "column_count": struct_data.get("column_count"),
-                    "size_bytes": struct_data.get("size_bytes"),
-                    "has_pii": struct_data.get("has_pii"),
-                    "has_phi": struct_data.get("has_phi"),
-                    "environment": struct_data.get("environment"),
-                    "labels": [{"key": k, "value": v} for k, v in struct_data.get("labels", {}).items()],
-                    "schema": schema_fields,
-                    "analytical_insights": quality_stats.get("insights", []),
-                    "lineage": lineage,
-                    "column_profiles": column_profiles,
-                    "key_metrics": key_metrics,
-                    "run_timestamp": self.run_timestamp.isoformat(),
-                    "insert_timestamp": "AUTO"
-                })
-                
-            if not rows_to_insert:
-                logger.info("No rows to insert into BigQuery.")
-                return
-
-            errors = self.client.insert_rows_json(table, rows_to_insert)
-            if errors:
-                logger.error(f"Errors inserting rows into BigQuery: {errors}")
-                raise Exception(f"BigQuery insert failed: {errors}")
-            else:
-                logger.info(f"Successfully inserted {len(rows_to_insert)} rows into {table_ref.path}")
+            logger.info("Finished BigQuery write operation.")
 
             self._create_or_update_latest_view()
             
             # Mark success
             is_success = True
-            
         finally:
             # Record lineage regardless of success/failure
             end_time = datetime.now(timezone.utc)
+            source_tables = [
+                f"{asset.get('project_id')}.{asset.get('dataset_id')}.{asset.get('table_id')}"
+                for asset in assets
+                if asset.get('project_id') and asset.get('dataset_id') and asset.get('table_id')
+            ]
+            
             if source_tables:
                 # Build source-target pairs for lineage
                 target_fqn = format_bigquery_fqn(self.project_id, self.dataset_id, self.table_id)

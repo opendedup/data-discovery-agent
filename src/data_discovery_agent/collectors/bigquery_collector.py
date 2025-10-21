@@ -7,21 +7,14 @@ This is the foundation of Phase 2 - populating Vertex AI Search with discoverabl
 
 import logging
 import os
-from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Lock
 
 from google.cloud import bigquery
-from google.cloud.exceptions import GoogleCloudError
+from google.cloud.exceptions import GoogleCloudError, NotFound
 from google.cloud.datacatalog_lineage_v1 import LineageClient
-from google.cloud.datacatalog_lineage_v1.types import (
-    SearchLinksRequest,
-    EntityReference,
-)
 
-from ..search.metadata_formatter import MetadataFormatter
-from ..search.jsonl_schema import BigQueryAssetSchema
 from .dataplex_profiler import DataplexProfiler
 from .gemini_describer import GeminiDescriber
 
@@ -82,10 +75,12 @@ class BigQueryCollector:
             default_excludes.append(metadata_dataset)
         
         self.exclude_datasets = exclude_datasets or default_excludes
-        
+        self.metadata_dataset = os.getenv("BQ_DATASET", "data_discovery")
+        self.metadata_table = os.getenv("BQ_TABLE", "discovered_assets")
+
         # Ensure metadata dataset is in exclusions even if user provided custom list
-        if metadata_dataset not in self.exclude_datasets:
-            self.exclude_datasets.append(metadata_dataset)
+        if self.metadata_dataset not in self.exclude_datasets:
+            self.exclude_datasets.append(self.metadata_dataset)
         
         self.use_dataplex_profiling = use_dataplex_profiling
         self.max_workers = max_workers
@@ -94,7 +89,6 @@ class BigQueryCollector:
         
         # Initialize clients
         self.client = bigquery.Client(project=project_id)
-        self.formatter = MetadataFormatter(project_id=project_id)
         
         # Initialize Lineage client for data lineage
         try:
@@ -158,7 +152,7 @@ class BigQueryCollector:
         self,
         max_tables: Optional[int] = None,
         include_views: bool = True,
-    ) -> List[BigQueryAssetSchema]:
+    ) -> List[Dict[str, Any]]:
         """
         Collect metadata from all accessible BigQuery tables.
         
@@ -167,10 +161,10 @@ class BigQueryCollector:
             include_views: Whether to include views
         
         Returns:
-            List of formatted BigQuery assets
+            List of BigQuery asset metadata as dictionaries
         """
         
-        logger.info(f"Starting BigQuery metadata collection")
+        logger.info("Starting BigQuery metadata collection")
         logger.info(f"Target projects: {self.target_projects}")
         
         all_assets = []
@@ -204,7 +198,7 @@ class BigQueryCollector:
         self,
         project_id: str,
         include_views: bool = True,
-    ) -> List[BigQueryAssetSchema]:
+    ) -> List[Dict[str, Any]]:
         """Scan all datasets in a project"""
         
         assets = []
@@ -263,7 +257,7 @@ class BigQueryCollector:
         dataset_id: str,
         include_views: bool = True,
         dataset_labels: Optional[Dict[str, str]] = None,
-    ) -> List[BigQueryAssetSchema]:
+    ) -> List[Dict[str, Any]]:
         """
         Scan all tables in a dataset using multi-threading.
         
@@ -274,7 +268,7 @@ class BigQueryCollector:
             dataset_labels: Labels from the dataset (for hierarchical filtering)
         
         Returns:
-            List of BigQueryAssetSchema assets
+            List of BigQuery asset metadata as dictionaries
         """
         
         assets = []
@@ -396,13 +390,16 @@ class BigQueryCollector:
         project_id: str,
         dataset_id: str,
         table_id: str,
-    ) -> Optional[BigQueryAssetSchema]:
+    ) -> Optional[Dict[str, Any]]:
         """Collect comprehensive metadata for a single table"""
         
         try:
             # Get table reference
             table_ref = f"{project_id}.{dataset_id}.{table_id}"
             table = self.client.get_table(table_ref)
+            
+            # Get existing description from metadata table
+            existing_table_description = self._get_existing_metadata(project_id, dataset_id, table_id)
             
             # Build core metadata
             table_metadata = {
@@ -416,13 +413,13 @@ class BigQueryCollector:
                 "column_count": len(table.schema) if table.schema else 0,
                 "created_time": table.created.isoformat() if table.created else None,
                 "modified_time": table.modified.isoformat() if table.modified else None,
-                "schema": self._format_schema(table.schema) if table.schema else None,
+                "schema": self._format_schema(table.schema, existing_table_description.get("column_descriptions")) if table.schema else {},
             }
             
             # Extract schema info
             schema_info = None
             if table.schema:
-                schema_info = {"fields": self._format_schema(table.schema).get("fields", [])}
+                schema_info = {"fields": self._format_schema(table.schema, existing_table_description.get("column_descriptions")).get("fields", [])}
             
             # Basic cost estimation
             cost_info = self._estimate_cost(table)
@@ -478,37 +475,41 @@ class BigQueryCollector:
                 }
             
             # Generate description with Gemini if missing
-            if not table.description and self.gemini_describer:
-                try:
-                    logger.info(f"Generating description for {table_id} using Gemini...")
-                    generated_desc = self.gemini_describer.generate_table_description(
-                        table_name=table_ref,
-                        schema=schema_info.get("fields", []) if schema_info else [],
-                        sample_values=sample_values,
-                        column_profiles=column_profiles,
-                        row_count=table.num_rows,
-                        size_bytes=table.num_bytes,
-                    )
-                    
-                    if generated_desc:
-                        table_metadata["description"] = generated_desc
-                        with self.stats_lock:
-                            self.stats['descriptions_generated'] += 1
-                        logger.info(f"✓ Generated description for {table_id}")
-                    else:
-                        logger.warning(f"Failed to generate description for {table_id}, using fallback")
-                        # Provide a fallback description if Gemini fails
+            if not table.description:
+                if existing_table_description:
+                    table_metadata["description"] = existing_table_description["description"]
+                    logger.info(f"Using existing description for {table_id} from metadata table.")
+                elif self.gemini_describer:
+                    try:
+                        logger.info(f"Generating description for {table_id} using Gemini...")
+                        generated_desc = self.gemini_describer.generate_table_description(
+                            table_name=table_ref,
+                            schema=schema_info.get("fields", []) if schema_info else [],
+                            sample_values=sample_values,
+                            column_profiles=column_profiles,
+                            row_count=table.num_rows,
+                            size_bytes=table.num_bytes,
+                        )
+                        
+                        if generated_desc:
+                            table_metadata["description"] = generated_desc
+                            with self.stats_lock:
+                                self.stats['descriptions_generated'] += 1
+                            logger.info(f"✓ Generated description for {table_id}")
+                        else:
+                            logger.warning(f"Failed to generate description for {table_id}, using fallback")
+                            # Provide a fallback description if Gemini fails
+                            table_metadata["description"] = self._generate_fallback_description(
+                                table_ref, table.table_type, table.num_rows, len(table.schema) if table.schema else 0
+                            )
+                    except Exception as e:
+                        logger.error(f"Error generating description for {table_id}: {e}, using fallback")
+                        # Provide a fallback description on exception
                         table_metadata["description"] = self._generate_fallback_description(
                             table_ref, table.table_type, table.num_rows, len(table.schema) if table.schema else 0
                         )
-                except Exception as e:
-                    logger.error(f"Error generating description for {table_id}: {e}, using fallback")
-                    # Provide a fallback description on exception
-                    table_metadata["description"] = self._generate_fallback_description(
-                        table_ref, table.table_type, table.num_rows, len(table.schema) if table.schema else 0
-                    )
             
-            # If still no description (no Gemini describer), provide fallback
+            # If still no description (e.g. Gemini disabled), provide fallback
             if not table_metadata["description"]:
                 table_metadata["description"] = self._generate_fallback_description(
                     table_ref, table.table_type, table.num_rows, len(table.schema) if table.schema else 0
@@ -554,16 +555,61 @@ class BigQueryCollector:
                     "downstream_tables": [],
                 }
             
-            # Format using our MetadataFormatter with complete data
-            asset = self.formatter.format_bigquery_table(
-                table_metadata=table_metadata,
-                schema_info=schema_info,
-                lineage_info=lineage_info,
-                cost_info=cost_info,
-                quality_info=quality_info,
-                security_info=security_info,
-                governance_info=governance_info,
-            )
+            # Build comprehensive asset dictionary
+            asset = {
+                # Core metadata
+                "project_id": project_id,
+                "dataset_id": dataset_id,
+                "table_id": table_id,
+                "description": table_metadata.get("description", ""),
+                "table_type": table_metadata.get("table_type", "TABLE"),
+                "created": table_metadata.get("created_time"),
+                "last_modified": table_metadata.get("modified_time"),
+                "last_accessed": None,  # Not available in basic metadata
+                "row_count": table_metadata.get("num_rows"),
+                "column_count": table_metadata.get("column_count", 0),
+                "size_bytes": table_metadata.get("num_bytes"),
+                
+                # Security and governance
+                "has_pii": security_info.get("has_pii", False) if security_info else False,
+                "has_phi": security_info.get("has_phi", False) if security_info else False,
+                "environment": governance_info.get("environment", "unknown") if governance_info else "unknown",
+                
+                # Labels (convert to list of dicts for BigQuery schema)
+                "labels": [
+                    {"key": k, "value": v}
+                    for k, v in governance_info.get("labels", {}).items()
+                ] if governance_info else [],
+                
+                # Schema (already formatted)
+                "schema": table_metadata.get("schema", {}).get("fields", []),
+                
+                # Analytical insights
+                "analytical_insights": quality_info.get("insights", []) if quality_info else [],
+                
+                # Lineage (convert to list of dicts for BigQuery schema)
+                "lineage": self._format_lineage_for_bigquery(lineage_info) if lineage_info else [],
+                
+                # Column profiles (convert to list of dicts for BigQuery schema)
+                "column_profiles": self._format_column_profiles_for_bigquery(
+                    quality_info.get("column_profiles", {}) if quality_info else {}
+                ),
+                
+                # Key metrics (convert to list of dicts for BigQuery schema)
+                "key_metrics": self._format_key_metrics_for_bigquery(
+                    quality_info, cost_info, table_metadata
+                ),
+                
+                # Extended metadata for markdown generation (not stored in BQ)
+                "_extended": {
+                    "schema_info": table_metadata.get("schema"),
+                    "lineage_info": lineage_info,
+                    "cost_info": cost_info,
+                    "quality_info": quality_info,
+                    "security_info": security_info,
+                    "governance_info": governance_info,
+                }
+            }
             
             logger.debug(f"Collected metadata for {table_ref}")
             return asset
@@ -572,13 +618,83 @@ class BigQueryCollector:
             logger.error(f"Error getting table {project_id}.{dataset_id}.{table_id}: {e}")
             return None
     
-    def _format_schema(self, schema: List[bigquery.SchemaField]) -> Dict[str, Any]:
+    def _get_existing_metadata(self, project_id: str, dataset_id: str, table_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Retrieves the most recent existing metadata for a table from the discovery table.
+        
+        Args:
+            project_id: The project ID of the table to look up.
+            dataset_id: The dataset ID of the table to look up.
+            table_id: The table ID of the table to look up.
+            
+        Returns:
+            A dictionary with 'description' and 'column_descriptions' if found, otherwise None.
+        """
+        metadata_table_ref = f"{self.project_id}.{self.metadata_dataset}.{self.metadata_table}"
+        
+        query = f"""
+            SELECT description, schema
+            FROM `{metadata_table_ref}`
+            WHERE project_id = @project_id
+              AND dataset_id = @dataset_id
+              AND table_id = @table_id
+            ORDER BY insert_timestamp DESC
+            LIMIT 1
+        """
+        
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("project_id", "STRING", project_id),
+                bigquery.ScalarQueryParameter("dataset_id", "STRING", dataset_id),
+                bigquery.ScalarQueryParameter("table_id", "STRING", table_id),
+            ]
+        )
+        
+        try:
+            query_job = self.client.query(query, job_config=job_config)
+            results = list(query_job.result())
+            
+            if not results:
+                return None
+                
+            row = results[0]
+            
+            column_descriptions = {}
+            if row.schema:
+                
+                def extract_descriptions(fields, parent_name=""):
+                    for field in fields:
+                        field_name = f"{parent_name}{field.get('name')}"
+                        if field.get('description'):
+                            column_descriptions[field_name] = field['description']
+                        if "fields" in field and field["fields"]:
+                             extract_descriptions(field["fields"], parent_name=f"{field_name}.")
+                
+                extract_descriptions(row.schema)
+
+            return {
+                "description": row.description,
+                "column_descriptions": column_descriptions,
+            }
+                
+        except NotFound:
+            logger.debug(f"Metadata table {metadata_table_ref} not found. Cannot get existing descriptions.")
+            return None
+        except Exception as e:
+            logger.warning(f"Could not query existing metadata for {project_id}.{dataset_id}.{table_id}: {e}")
+            return None
+
+    def _format_schema(self, schema: List[bigquery.SchemaField], existing_column_descriptions: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
         """Format BigQuery schema to our format"""
         
+        existing_column_descriptions = existing_column_descriptions or {}
         fields = []
         for field in schema:
             # Generate fallback description if missing
             description = field.description
+            if not description:
+                description = existing_column_descriptions.get(field.name)
+            
             if not description:
                 description = self._generate_field_fallback_description(field.name, field.field_type, field.mode)
             
@@ -596,7 +712,7 @@ class BigQueryCollector:
                         "name": f.name,
                         "type": f.field_type,
                         "mode": f.mode,
-                        "description": f.description or self._generate_field_fallback_description(f.name, f.field_type, f.mode),
+                        "description": f.description or existing_column_descriptions.get(f"{field.name}.{f.name}") or self._generate_field_fallback_description(f.name, f.field_type, f.mode),
                     }
                     for f in field.fields
                 ]
@@ -790,6 +906,106 @@ class BigQueryCollector:
         label_value = labels.get(self.filter_label_key, "")
         # Case-insensitive comparison for the value
         return str(label_value).lower() == "true"
+    
+    def _format_lineage_for_bigquery(self, lineage_info: Dict[str, Any]) -> List[Dict[str, str]]:
+        """Format lineage info for BigQuery schema (list of source/target dicts)"""
+        
+        lineage_records = []
+        
+        # Add upstream sources
+        for source in lineage_info.get("upstream_tables", []):
+            lineage_records.append({
+                "source": source,
+                "target": ""  # Empty target means this table is the target
+            })
+        
+        # Add downstream targets
+        for target in lineage_info.get("downstream_tables", []):
+            lineage_records.append({
+                "source": "",  # Empty source means this table is the source
+                "target": target
+            })
+        
+        return lineage_records
+    
+    def _format_column_profiles_for_bigquery(self, column_profiles: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Format column profiles for BigQuery schema"""
+        
+        profiles_list = []
+        
+        for col_name, profile in column_profiles.items():
+            profile_type = profile.get("type", "other")
+            
+            profile_dict = {
+                "column_name": col_name,
+                "profile_type": profile_type,
+                "min_value": str(profile.get("min")) if profile.get("min") is not None else None,
+                "max_value": str(profile.get("max")) if profile.get("max") is not None else None,
+                "avg_value": str(profile.get("avg")) if profile.get("avg") is not None else None,
+                "distinct_count": profile.get("distinct_count"),
+                "null_percentage": profile.get("null_ratio", 0.0) * 100.0 if "null_ratio" in profile else None,
+            }
+            
+            # Handle string-specific fields
+            if "min_length" in profile:
+                profile_dict["min_value"] = str(profile["min_length"])
+            if "max_length" in profile:
+                profile_dict["max_value"] = str(profile["max_length"])
+            
+            profiles_list.append(profile_dict)
+        
+        return profiles_list
+    
+    def _format_key_metrics_for_bigquery(
+        self,
+        quality_info: Optional[Dict[str, Any]],
+        cost_info: Optional[Dict[str, Any]],
+        table_metadata: Dict[str, Any]
+    ) -> List[Dict[str, str]]:
+        """Format key metrics for BigQuery schema"""
+        
+        metrics = []
+        
+        # Add cost metrics
+        if cost_info:
+            if "storage_cost_usd" in cost_info:
+                metrics.append({
+                    "metric_name": "storage_cost_monthly_usd",
+                    "metric_value": str(cost_info["storage_cost_usd"])
+                })
+            if "query_cost_usd" in cost_info:
+                metrics.append({
+                    "metric_name": "query_cost_monthly_usd",
+                    "metric_value": str(cost_info["query_cost_usd"])
+                })
+            if "total_monthly_cost_usd" in cost_info:
+                metrics.append({
+                    "metric_name": "total_monthly_cost_usd",
+                    "metric_value": str(cost_info["total_monthly_cost_usd"])
+                })
+        
+        # Add quality metrics
+        if quality_info:
+            if "completeness_score" in quality_info:
+                metrics.append({
+                    "metric_name": "completeness_score",
+                    "metric_value": str(quality_info["completeness_score"])
+                })
+            if "freshness_score" in quality_info:
+                metrics.append({
+                    "metric_name": "freshness_score",
+                    "metric_value": str(quality_info["freshness_score"])
+                })
+        
+        # Add table size metric
+        if table_metadata.get("num_bytes"):
+            size_gb = table_metadata["num_bytes"] / (1024 ** 3)
+            metrics.append({
+                "metric_name": "size_gb",
+                "metric_value": f"{size_gb:.2f}"
+            })
+        
+        return metrics
     
     def _print_stats(self):
         """Print collection statistics"""

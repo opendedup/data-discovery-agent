@@ -7,13 +7,12 @@ process, designed to be called by an Airflow DAG.
 
 import logging
 import os
-from pathlib import Path
 from datetime import datetime, timezone
 from typing import Any
 
+from google.cloud import storage
 from data_discovery_agent.collectors import BigQueryCollector
-from data_discovery_agent.search import MetadataFormatter, MarkdownFormatter
-from data_discovery_agent.search.jsonl_schema import BigQueryAssetSchema
+from data_discovery_agent.search import MarkdownFormatter
 from data_discovery_agent.clients import VertexSearchClient
 from data_discovery_agent.writers.bigquery_writer import BigQueryWriter
 from data_discovery_agent.utils.lineage import record_lineage, format_bigquery_fqn
@@ -71,30 +70,9 @@ def collect_metadata_task(**context: Any) -> None:
         
     logger.info(f"Collected {len(assets)} assets.")
     
-    # Debug: Check lineage before serialization
-    for asset in assets:
-        if asset.struct_data.table_id == 'odds':
-            lineage = getattr(asset.struct_data, 'lineage', None)
-            if lineage:
-                logger.info(f"DEBUG: odds asset HAS lineage before model_dump: upstream={len(lineage.get('upstream_tables', []))}, downstream={len(lineage.get('downstream_tables', []))}")
-            else:
-                logger.warning(f"DEBUG: odds asset has NO lineage attribute before model_dump")
-    
+    # Assets are already plain dicts from the collector
     # Push assets to XComs for downstream tasks
-    # Pydantic models need to be converted to dicts for XCom serialization
-    asset_dicts = [asset.model_dump() for asset in assets]
-    
-    # Debug: Check lineage after serialization
-    for asset_dict in asset_dicts:
-        if asset_dict.get('struct_data', {}).get('table_id') == 'odds':
-            lineage = asset_dict.get('struct_data', {}).get('lineage')
-            if lineage:
-                logger.info(f"DEBUG: odds asset HAS lineage after model_dump: upstream={len(lineage.get('upstream_tables', []))}, downstream={len(lineage.get('downstream_tables', []))}")
-            else:
-                logger.warning(f"DEBUG: odds asset has NO lineage in struct_data after model_dump")
-                logger.warning(f"DEBUG: struct_data keys: {list(asset_dict.get('struct_data', {}).keys())}")
-    
-    context['ti'].xcom_push(key='assets', value=asset_dicts)
+    context['ti'].xcom_push(key='assets', value=assets)
 
 
 def export_to_bigquery_task(**context: Any) -> None:
@@ -224,7 +202,6 @@ def export_markdown_reports_task(**context: Any) -> None:
         
         # Allow manual override via dag_run.conf for testing/manual runs
         args = context.get('dag_run', {}).conf if context.get('dag_run') else {}
-        conf_args = args.get('markdown_args', {}) if args else {}
         
         # Get assets from XCom
         asset_dicts = context['ti'].xcom_pull(key='assets', task_ids='collect_metadata')
@@ -250,16 +227,13 @@ def export_markdown_reports_task(**context: Any) -> None:
         reports_generated = 0
         for asset_dict in asset_dicts:
             try:
-                # Convert dict back to BigQueryAssetSchema
-                asset = BigQueryAssetSchema(**asset_dict)
-                
-                # Generate markdown report
-                markdown = formatter.generate_table_report(asset)
+                # Generate markdown report (asset_dict is already a plain dict)
+                markdown = formatter.generate_table_report(asset_dict)
                 
                 # Construct GCS path
-                table_id = asset.struct_data.table_id
-                dataset_id = asset.struct_data.dataset_id
-                project = asset.struct_data.project_id
+                table_id = asset_dict.get("table_id", "unknown")
+                dataset_id = asset_dict.get("dataset_id", "unknown")
+                project = asset_dict.get("project_id", project_id)
                 gcs_path = f"reports/{run_timestamp}/{project}/{dataset_id}/{table_id}.md"
                 
                 # Upload to GCS

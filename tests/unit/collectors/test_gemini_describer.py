@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 from unittest.mock import Mock, patch
 
 import pytest
+import os
 
 from data_discovery_agent.collectors.gemini_describer import GeminiDescriber
 
@@ -35,24 +36,25 @@ class TestGeminiDescriber:
         assert describer.api_key is None
         assert describer.enabled is False
 
-    def test_init_with_env_api_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Test initialization with API key from environment."""
-        monkeypatch.setenv("GEMINI_API_KEY", "env-api-key")
-
+    def test_init_with_env_api_key(self, mocker: MockerFixture) -> None:
+        """Test initialization with API key from environment variable."""
+        mocker.patch.dict(os.environ, {"GEMINI_API_KEY": "env-key"})
         describer = GeminiDescriber()
-
-        assert describer.api_key == "env-api-key"
-        assert describer.enabled is True
+        assert describer.api_key == "env-key"
+        assert describer.is_enabled
 
     @patch("data_discovery_agent.collectors.gemini_describer.genai")
-    def test_generate_description_success(self, mock_genai: Mock) -> None:
+    def test_generate_description_success(
+        self, mock_genai: Mock, mocker: MockerFixture
+    ) -> None:
         """Test successful description generation."""
         # Mock Gemini model
         mock_model = Mock()
         mock_response = Mock()
         mock_response.text = "This is a test table containing user information."
-        mock_model.generate_content.return_value = mock_response
-        mock_genai.GenerativeModel.return_value = mock_model
+        mock_genai.GenerativeModel.return_value.generate_content.return_value = (
+            mock_response
+        )
 
         describer = GeminiDescriber(api_key="test-key")
 
@@ -61,20 +63,39 @@ class TestGeminiDescriber:
             "schema": [{"name": "id", "type": "STRING"}, {"name": "name", "type": "STRING"}],
         }
 
-        description = describer.generate_description(table_metadata)
+        description = describer.generate_table_description(
+            table_name=table_metadata["table_id"], schema=table_metadata["schema"]
+        )
 
         assert description is not None
         assert "user" in description.lower()
-        mock_model.generate_content.assert_called_once()
+        mock_genai.GenerativeModel.return_value.generate_content.assert_called_once()
+        assert description == "This is a test table containing user information."
 
     @patch("data_discovery_agent.collectors.gemini_describer.genai")
-    def test_generate_description_disabled(self, mock_genai: Mock) -> None:
-        """Test description generation when disabled."""
+    def test_generate_description_disabled(
+        self, mock_genai: Mock, mocker: MockerFixture
+    ) -> None:
+        """Test that description generation is skipped if the client is disabled."""
+        mocker.patch.dict(os.environ, clear=True)
+        mocker.patch(
+            "data_discovery_agent.collectors.gemini_describer.os.getenv",
+            return_value=None,
+        )
+        # Initialize without API key to disable the client
         describer = GeminiDescriber(api_key=None)
+        assert not describer.is_enabled
 
-        table_metadata = {"table_id": "users"}
-
-        description = describer.generate_description(table_metadata)
+        table_metadata = {
+            "table_id": "users",
+            "schema": [
+                {"name": "id", "type": "STRING"},
+                {"name": "name", "type": "STRING"},
+            ],
+        }
+        description = describer.generate_table_description(
+            table_name=table_metadata["table_id"], schema=[]
+        )
 
         assert description is None
         mock_genai.GenerativeModel.assert_not_called()
@@ -98,7 +119,9 @@ class TestGeminiDescriber:
 
         table_metadata = {"table_id": "users"}
 
-        description = describer.generate_description(table_metadata)
+        description = describer.generate_table_description(
+            table_name=table_metadata["table_id"], schema=[]
+        )
 
         assert description == "Generated description"
         assert mock_model.generate_content.call_count == 2
@@ -125,7 +148,10 @@ class TestGeminiDescriber:
             ],
         }
 
-        description = describer.generate_description(table_metadata)
+        description = describer.generate_table_description(
+            table_name=f'{table_metadata.get("dataset_id", "dataset")}.{table_metadata["table_id"]}',
+            schema=table_metadata["schema"],
+        )
 
         # Verify prompt includes key information
         call_args = mock_model.generate_content.call_args
@@ -145,7 +171,9 @@ class TestGeminiDescriber:
         table_metadata = {"table_id": "users"}
 
         # Should handle error gracefully
-        description = describer.generate_description(table_metadata)
+        description = describer.generate_table_description(
+            table_name=table_metadata["table_id"], schema=[]
+        )
         
         assert description is None or "error" in description.lower()
 
@@ -162,7 +190,9 @@ class TestGeminiDescriber:
 
         table_metadata = {"table_id": "users"}
 
-        description = describer.generate_description(table_metadata)
+        description = describer.generate_table_description(
+            table_name=table_metadata["table_id"], schema=[]
+        )
 
         assert description is not None
         assert not description.startswith(" ")

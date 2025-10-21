@@ -11,13 +11,12 @@ import logging
 from typing import Any, Dict
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request, Response, HTTPException
+from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import StreamingResponse
 from google.cloud import storage
 
 from ..clients.vertex_search_client import VertexSearchClient
-from .config import MCPConfig, load_config
-from .server import create_mcp_server
+from .config import load_config
 from .handlers import MCPHandlers
 
 logger = logging.getLogger(__name__)

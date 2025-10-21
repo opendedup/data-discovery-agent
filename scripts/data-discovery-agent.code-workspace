@@ -5,6 +5,9 @@
 		},
 		{
 			"path": "../../query-generation-agent"
+		},
+		{
+			"path": "../../data-discovery-infrastructure-gcp"
 		}
 	],
 	"settings": {}

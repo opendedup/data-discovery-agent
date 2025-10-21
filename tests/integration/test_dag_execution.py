@@ -14,7 +14,7 @@ from dotenv import load_dotenv
 
 from data_discovery_agent.clients.vertex_search_client import VertexSearchClient
 from data_discovery_agent.collectors.bigquery_collector import BigQueryCollector
-from data_discovery_agent.search.jsonl_schema import BigQueryAssetSchema
+# Removed deprecated BigQueryAssetSchema import - using plain dicts now
 from data_discovery_agent.search.markdown_formatter import MarkdownFormatter
 from data_discovery_agent.writers.bigquery_writer import BigQueryWriter
 from tests.helpers.assertions import assert_valid_bigquery_asset
@@ -34,7 +34,7 @@ class TestDAGExecution:
         return gcp_config["GCP_PROJECT_ID"]
 
     @pytest.fixture(scope="class")
-    def collected_assets(self, gcp_project_id: str) -> List[BigQueryAssetSchema]:
+    def collected_assets(self, gcp_project_id: str) -> List[Dict[str, Any]]:
         """Execute collect_metadata_task equivalent."""
         print("\n=== Step 1: Collecting Metadata ===")
         
@@ -48,7 +48,7 @@ class TestDAGExecution:
 
         assert len(assets) > 0, "Should collect at least one asset"
         print(f"Collected {len(assets)} assets")
-
+        
         return assets
 
     @pytest.fixture(scope="class")
@@ -57,7 +57,7 @@ class TestDAGExecution:
         return datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
 
     def test_step1_collect_metadata(
-        self, collected_assets: List[BigQueryAssetSchema]
+        self, collected_assets: List[Dict[str, Any]]
     ) -> None:
         """Test Step 1: Metadata collection."""
         print(f"\n=== Testing Step 1: {len(collected_assets)} assets collected ===")
@@ -66,18 +66,16 @@ class TestDAGExecution:
 
         # Validate each asset
         for asset in collected_assets:
-            # Determine table type from struct_data
-            asset_type = getattr(asset.struct_data, 'asset_type', 'TABLE')
-            # Handle both enum and string cases
-            table_type = asset_type.value if hasattr(asset_type, 'value') else str(asset_type)
-            assert_valid_bigquery_asset(asset, table_type=table_type)
+            # Get asset type directly from dict
+            asset_type = asset.get('asset_type', 'TABLE')
+            assert_valid_bigquery_asset(asset, table_type=asset_type)
 
         print("✓ All assets are valid")
 
     def test_step2_export_to_bigquery(
         self,
         gcp_project_id: str,
-        collected_assets: List[BigQueryAssetSchema],
+        collected_assets: List[Dict[str, Any]],
         run_timestamp: str,
         gcp_config: Dict[str, str],
     ) -> None:
@@ -95,9 +93,8 @@ class TestDAGExecution:
             task_id="test_export_to_bigquery",
         )
 
-        # Write assets - convert to dict format expected by BigQuery writer
-        assets_dicts = [asset.model_dump() for asset in collected_assets]
-        writer.write_to_bigquery(assets_dicts)
+        # Assets are already dicts, no conversion needed
+        writer.write_to_bigquery(collected_assets)
 
         print(f"✓ Exported {len(collected_assets)} assets to BigQuery")
         print(f"  Table: {gcp_project_id}.{dataset_id}.{table_id}")
@@ -105,7 +102,7 @@ class TestDAGExecution:
     def test_step3_export_markdown_reports(
         self,
         gcp_project_id: str,
-        collected_assets: List[BigQueryAssetSchema],
+        collected_assets: List[Dict[str, Any]],
         run_timestamp: str,
         gcp_config: Dict[str, str],
     ) -> None:
@@ -124,10 +121,10 @@ class TestDAGExecution:
             markdown = formatter.generate_table_report(asset)
             assert markdown is not None
 
-            # Generate GCS path
-            project_id = asset.struct_data.project_id
-            dataset_id = asset.struct_data.dataset_id
-            table_id = asset.struct_data.table_id
+            # Generate GCS path - access dict keys directly
+            project_id = asset['project_id']
+            dataset_id = asset['dataset_id']
+            table_id = asset['table_id']
 
             blob_path = f"{run_timestamp}/{project_id}/{dataset_id}/{table_id}.md"
             blob = bucket.blob(blob_path)

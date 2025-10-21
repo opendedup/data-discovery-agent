@@ -1,444 +1,528 @@
-# BigQuery Data Estate Discovery System
+# BigQuery Data Discovery Agent
 
-A dual-mode AI-powered discovery system for BigQuery metadata, combining cached semantic search with live agent-based discovery.
+An automated BigQuery metadata discovery system that makes your data estate searchable through natural language. Scan BigQuery datasets, enrich metadata with AI-generated descriptions, and query your data catalog using AI assistants like Cursor or Claude Desktop.
 
-## 🎯 Project Status
+## What Does This Do?
 
-| Phase | Status | Description |
-|-------|--------|-------------|
-| **Phase 0** | ✅ Complete | Infrastructure (GKE, GCS, Service Accounts) |
-| **Phase 1** | ✅ Complete | Vertex AI Search (Cached Discovery Path) |
-| **Phase 2.1** | ✅ Complete | BigQuery Metadata Collector (Multi-threaded, Dataplex, Gemini) |
-| **Phase 2.2+** | ⏳ Pending | Cost Analysis, Advanced Lineage |
-| **Phase 3** | ⏳ Pending | Smart Query Router |
-| **Phase 4+** | ⏳ Pending | Live Agents & Advanced Features |
+This tool automates BigQuery metadata collection and makes it searchable:
 
-## 🏗️ Architecture Overview
+1. **Scans BigQuery** - Collects table schemas, statistics, descriptions, and lineage
+2. **Enriches Metadata** - Uses Dataplex profiling and Gemini AI to generate descriptions and insights
+3. **Indexes for Search** - Exports to Vertex AI Search for semantic search capabilities
+4. **Provides MCP Interface** - Exposes data discovery through Model Context Protocol for AI assistants
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                  Dual-Mode Architecture                     │
-└─────────────────────────────────────────────────────────────┘
+**Use Cases:**
+- Find tables by natural language queries ("customer transaction data with PII")
+- Discover upstream/downstream dependencies
+- Track data lineage and governance
+- Generate automated documentation
+- Enable AI assistants to understand your data estate
 
-Cached Path (90%+ of queries, <200ms):
-  User Query → Router → Vertex AI Search → Results
+## Key Features
 
-Live Path (Complex queries, 5-30s):
-  User Query → Router → GenAI Toolbox Agents → Results
+- **Automated BigQuery Scanning** - Multi-threaded collection from multiple projects and datasets
+- **AI-Powered Descriptions** - Gemini generates table and column descriptions automatically
+- **Rich Column Profiling** - Dataplex integration provides statistics, distributions, and sample values
+- **Data Lineage Tracking** - Captures upstream and downstream dependencies via Data Catalog Lineage API
+- **Semantic Search** - Vertex AI Search enables natural language queries over metadata
+- **MCP Server** - Integrates with Cursor, Claude Desktop, and other MCP-compatible AI assistants
+- **Automated Reports** - Generates markdown documentation for each table
+- **Label-Based Filtering** - Exclude tables using BigQuery labels (e.g., `ignore-discovery-scan: true`)
 
-Background:
-  Discovery Agents → JSONL → GCS → Vertex AI Search (1-5 min)
-```
+## Prerequisites
 
-## 🚀 Quick Start
+### Required GCP Resources
 
-### Prerequisites
+You need the following GCP resources provisioned (infrastructure deployment is handled separately):
 
-- GCP Project with required APIs enabled
-- Region: `us-central1` (or your preferred region)
-- Shared VPC (optional, or use default VPC)
-- `gcloud` CLI with alpha components
-- Terraform >= 1.0
-- Python >= 3.9
-- Poetry for dependency management
+- **BigQuery** datasets to scan
+- **Vertex AI Search** datastore (global location recommended)
+- **GCS Buckets**:
+  - JSONL bucket for Vertex AI Search import
+  - Reports bucket for markdown documentation
+- **Dataplex** - For rich column profiling and data quality statistics
+- **Gemini API** - For AI-generated table and column descriptions
+- **Cloud Composer** (optional) - For scheduled, production-grade metadata collection via Airflow
+- **Service Account** with permissions:
+  - BigQuery Data Viewer
+  - Storage Object Admin (for buckets)
+  - Vertex AI Search Editor
+  - Dataplex Data Reader (for column profiling)
+  - Data Catalog LineageAdmin (optional, for lineage tracking)
+  - Composer Worker (optional, if using Cloud Composer)
 
-### 1. Deploy Infrastructure (Phase 0)
+### Local Requirements
 
-```bash
-# Navigate to terraform directory
-cd terraform
+- Python >= 3.10
+- Poetry (for dependency management)
+- gcloud CLI (authenticated)
 
-# Create terraform.tfvars
-cp terraform.tfvars.example terraform.tfvars
-# Edit terraform.tfvars with your values
+## Quick Start
 
-# Deploy
-terraform init
-terraform apply
-
-# Configure kubectl
-gcloud container clusters get-credentials data-discovery-cluster \
-    --region=us-central1 \
-    --project=YOUR_PROJECT_ID
-```
-
-### 2. Deploy Vertex AI Search (Phase 1)
+### 1. Install Dependencies
 
 ```bash
-# Run automated setup
-./scripts/setup-vertex-search.sh
-
-# Or manually:
-cd terraform/vertex-ai-search
-terraform init
-terraform apply -var="project_id=YOUR_PROJECT_ID"
-
-# Create data store
-gcloud alpha discovery-engine data-stores create data-discovery-metadata \
-    --project=YOUR_PROJECT_ID \
-    --location=global \
-    --collection=default_collection \
-    --industry-vertical=GENERIC \
-    --content-config=CONTENT_REQUIRED \
-    --solution-type=SOLUTION_TYPE_SEARCH
-```
-
-### 3. Test Phase 1 Components
-
-```bash
-# Install dependencies
+git clone <repository-url>
+cd data-discovery-agent
 poetry install
-
-# Run example script
-python examples/phase1_complete_example.py
 ```
 
-## 📦 What's Included
+### 2. Configure Environment
 
-### Phase 0: Infrastructure ✅
-
-**GKE Cluster:**
-- Private cluster (no external IPs)
-- Machine type: `e2-standard-2`
-- Autoscaling: 2-5 nodes
-- Workload Identity enabled
-- Network: Shared VPC `ula`
-
-**GCS Buckets:**
-- `{project-id}-data-discovery-jsonl` (JSONL metadata)
-- `{project-id}-data-discovery-reports` (Markdown reports)
-
-**Service Accounts:**
-- `data-discovery-agent`: Read-only access to BigQuery, Dataplex
-- `data-discovery-metadata`: Metadata write access (approval required)
-- `data-discovery-gke`: GKE node service account
-
-**GenAI Toolbox (Phase 0.2):**
-- Deployed on GKE with Internal LoadBalancer
-- MCP protocol for agent communication
-- BigQuery, Dataplex, Data Catalog tools
-- Read-only with query validation
-
-### Phase 1: Vertex AI Search ✅
-
-**Infrastructure:**
-- Vertex AI Search data store
-- Service account for ingestion
-- IAM bindings
-
-**Python Components:**
-
-1. **JSONL Schema** (`search/jsonl_schema.py`)
-   - Document structure for Vertex AI Search
-   - Filterable fields + searchable content
-   - Volatility-based caching
-
-2. **Metadata Formatter** (`search/metadata_formatter.py`)
-   - Transforms discovery outputs to JSONL
-   - Generates rich searchable content
-   - Exports to GCS
-
-3. **Markdown Formatter** (`search/markdown_formatter.py`)
-   - Creates comprehensive reports
-   - Executive summaries, metrics, cost analysis
-   - Exports to GCS
-
-4. **Query Builder** (`search/query_builder.py`)
-   - Parses natural language queries
-   - Extracts structured filters
-   - Builds hybrid queries
-
-5. **Result Parser** (`search/result_parser.py`)
-   - Formats search results
-   - Generates console links
-   - Provides suggestions
-
-6. **Vertex Search Client** (`clients/vertex_search_client.py`)
-   - High-level API wrapper
-   - Query building and parsing
-   - Document ingestion
-
-**Data Models:**
-- Search request/response models
-- Discovery request/response models
-- Asset metadata models
-
-### Phase 2.1: BigQuery Metadata Collector ✅
-
-**BigQuery Collector** (`collectors/bigquery_collector.py`):
-- Project/dataset/table scanning
-- Schema extraction (nested fields)
-- Statistics collection (rows, size, timestamps)
-- Basic cost estimation
-- PII/PHI indicator detection
-- Progress tracking and error handling
-
-**Collection Script** (`scripts/collect-bigquery-metadata.py`):
-- CLI interface for metadata collection
-- Flexible filtering (projects, datasets, table limits)
-- GCS upload automation
-- Vertex AI Search import triggering
-- Comprehensive logging and statistics
-
-**Features:**
-- ✅ Automated collection from multiple datasets
-- ✅ **Multi-threaded processing** (5x faster with default 5 workers)
-- ✅ **Dataplex Data Profile Scan integration** (column profiling, sample values)
-- ✅ **Gemini AI integration** (auto-descriptions, analytical insights)
-- ✅ JSONL export for Vertex AI Search
-- ✅ Markdown reports for documentation
-- ✅ Vertex AI Search import automation
-- ✅ Error handling and progress tracking
-
-## 💡 Usage Examples
-
-### Collect BigQuery Metadata
+Copy the example environment file and fill in your values:
 
 ```bash
-# Collect all tables from current project (default: auto-detect CPU cores)
-poetry run python scripts/collect-bigquery-metadata.py --import
+cp .env.example .env
+```
 
-# Test with limited tables
-poetry run python scripts/collect-bigquery-metadata.py --max-tables 10 --skip-gcs
+Edit `.env` with your GCP project and resource details:
 
-# Fast collection with more workers (10 threads)
-poetry run python scripts/collect-bigquery-metadata.py --workers 10 --import
+```bash
+GCP_PROJECT_ID=your-project-id
+GCS_JSONL_BUCKET=your-jsonl-bucket
+GCS_REPORTS_BUCKET=your-reports-bucket
+VERTEX_DATASTORE_ID=data-discovery-metadata
+VERTEX_LOCATION=global
+GEMINI_API_KEY=your-gemini-api-key  # Optional, for AI descriptions
+```
 
-# Collect from specific projects with multi-threading
-poetry run python scripts/collect-bigquery-metadata.py \
-  --projects proj1 proj2 \
-  --exclude-datasets "_staging" "temp_" \
-  --workers 8 \
-  --import
+### 3. Run Your First Scan
 
-# With Dataplex profiling and Gemini insights
+Test with a limited number of tables:
+
+```bash
+poetry run python scripts/collect-bigquery-metadata.py --max-tables 10
+```
+
+This will:
+1. Scan up to 10 BigQuery tables from your project
+2. Collect schemas, statistics, and metadata
+3. Generate JSONL documents for Vertex AI Search
+4. Upload to GCS and trigger Vertex AI Search import
+5. Create markdown reports for each table
+
+## Usage
+
+### Command Line Scanning
+
+#### Basic Scan
+
+Scan all tables in your project and import to Vertex AI Search:
+
+```bash
+poetry run python scripts/collect-bigquery-metadata.py
+```
+
+#### Scan with Enhanced Features
+
+Use Dataplex profiling and Gemini AI descriptions for richer metadata:
+
+```bash
 poetry run python scripts/collect-bigquery-metadata.py \
   --use-dataplex \
   --use-gemini \
-  --workers 5 \
-  --import
+  --workers 5
 ```
 
-**Performance**: Multi-threading provides **~5x speedup** (auto-scaled to CPU cores).  
-See [`MULTITHREADING.md`](MULTITHREADING.md) for detailed performance tuning.
+#### Multi-Project Scan
 
-### Search for Tables with PII
-
-```python
-from data_discovery_agent.clients import VertexSearchClient
-from data_discovery_agent.models import SearchRequest
-
-client = VertexSearchClient(
-    project_id="YOUR_PROJECT_ID",
-    location="global",
-    datastore_id="data-discovery-metadata",
-)
-
-response = client.search(SearchRequest(
-    query="customer tables with PII",
-    has_pii=True,
-    page_size=10,
-))
-
-for result in response.results:
-    print(f"{result.title}: {result.metadata.row_count:,} rows")
-```
-
-### Format and Export Metadata
-
-```python
-from data_discovery_agent.search import MetadataFormatter
-
-formatter = MetadataFormatter(project_id="YOUR_PROJECT_ID")
-
-asset = formatter.format_bigquery_table(
-    table_metadata={...},
-    cost_info={"monthly_cost_usd": 125.50},
-    security_info={"has_pii": True},
-)
-
-gcs_uri = formatter.export_batch_to_gcs(
-    documents=[asset],
-    gcs_bucket="YOUR_PROJECT_ID-data-discovery-jsonl",
-)
-```
-
-### Generate Markdown Report
-
-```python
-from data_discovery_agent.search import MarkdownFormatter
-
-formatter = MarkdownFormatter(project_id="YOUR_PROJECT_ID")
-report = formatter.generate_table_report(asset)
-
-formatter.export_to_gcs(
-    markdown=report,
-    gcs_bucket="YOUR_PROJECT_ID-data-discovery-reports",
-    gcs_path="finance/transactions.md",
-)
-```
-
-## 📊 Performance
-
-| Metric | Target | Status |
-|--------|--------|--------|
-| Cached Query Latency | <200ms | ✅ Designed |
-| Live Query Latency | 5-30s | ✅ Designed |
-| Cache Hit Rate | >90% | ⏳ Phase 3 |
-| Concurrent Users | 100+ | ✅ Designed |
-
-## 💰 Cost Estimate
-
-**Monthly Cost (us-central1):**
-
-| Component | Cost |
-|-----------|------|
-| GKE Cluster (2x e2-standard-2) | ~$100 |
-| GCS Storage (50GB) | ~$1 |
-| Vertex AI Search (100K docs, 100K queries) | ~$1,300 |
-| BigQuery queries (agent reads) | ~$50 |
-| **Total** | **~$1,450/month** |
-
-## 🔒 Security & Compliance
-
-**SR-2A Compliance:**
-- ✅ Read-only access to source data
-- ✅ Metadata writes require approval
-- ✅ Audit logging enabled
-- ✅ Workload Identity for service accounts
-- ✅ Private GKE cluster (no external IPs)
-- ✅ Encryption at rest and in transit
-
-**PII/PHI Handling:**
-- ✅ Automatic classification via DLP
-- ✅ Never stores actual data values
-- ✅ Metadata-only approach
-
-## 📚 Documentation
-
-- **[Phase 1 Architecture](docs/PHASE1_VERTEX_SEARCH.md)**: Detailed Phase 1 documentation
-- **[Phase 1 Summary](PHASE1_SUMMARY.md)**: Phase 1 completion summary
-- **[Phase 2.1 Metadata Collection](docs/PHASE2_METADATA_COLLECTION.md)**: BigQuery collector documentation
-- **[Architecture](docs/ARCHITECTURE.md)**: Overall system architecture
-- **[Project Plan](.cursor/plans/bigquery-discovery-system-217d0748.plan.md)**: Complete project plan
-- **[Terraform README](terraform/README.md)**: Infrastructure documentation
-- **[GenAI Toolbox README](terraform/genai-toolbox/README.md)**: Agent deployment docs
-
-## 🗂️ Project Structure
-
-```
-data-discovery-agent/
-├── src/data_discovery_agent/
-│   ├── search/              # Phase 1: Search components
-│   │   ├── jsonl_schema.py
-│   │   ├── metadata_formatter.py
-│   │   ├── markdown_formatter.py
-│   │   ├── query_builder.py
-│   │   └── result_parser.py
-│   ├── collectors/          # Phase 2: Metadata collectors
-│   │   └── bigquery_collector.py
-│   ├── models/              # Data models
-│   │   ├── search_models.py
-│   │   ├── discovery_request.py
-│   │   └── discovery_response.py
-│   └── clients/             # API clients
-│       └── vertex_search_client.py
-├── terraform/
-│   ├── main.tf              # Phase 0: GKE cluster
-│   ├── storage.tf           # GCS buckets
-│   ├── service-accounts.tf  # IAM
-│   ├── genai-toolbox/       # Phase 0.2: GenAI Toolbox
-│   └── vertex-ai-search/    # Phase 1: Vertex AI Search
-├── config/
-│   └── genai-toolbox/       # GenAI Toolbox configuration
-├── scripts/
-│   ├── setup-infrastructure.sh
-│   ├── setup-vertex-search.sh
-│   ├── deploy-genai-toolbox.sh
-│   ├── validate-setup.sh
-│   └── collect-bigquery-metadata.py  # Phase 2.1
-├── examples/
-│   └── phase1_complete_example.py
-└── docs/
-    ├── ARCHITECTURE.md
-    ├── PHASE1_VERTEX_SEARCH.md
-    └── PHASE2_METADATA_COLLECTION.md
-```
-
-## 🛠️ Development
-
-### Install Dependencies
+Scan specific projects with filtering:
 
 ```bash
-# Using poetry
-poetry install
+poetry run python scripts/collect-bigquery-metadata.py \
+  --projects prod-project-1 prod-project-2 \
+  --exclude-datasets "_staging" "temp_" \
+  --workers 10
+```
 
-# Or using pip
-pip install -r requirements.txt
+#### Test Scan (No Import)
+
+Collect metadata without uploading to GCS or triggering Vertex AI Search:
+
+```bash
+poetry run python scripts/collect-bigquery-metadata.py \
+  --max-tables 5 \
+  --skip-gcs \
+  --skip-import
+```
+
+#### Export to BigQuery
+
+Store collected metadata in a BigQuery table for analysis:
+
+```bash
+poetry run python scripts/collect-bigquery-metadata.py \
+  --export-to-bigquery \
+  --bq-dataset data_discovery \
+  --bq-table discovered_assets
+```
+
+### CLI Options Reference
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--project` | GCP project to scan | From `GCP_PROJECT_ID` env var |
+| `--projects` | Multiple projects to scan | Current project only |
+| `--max-tables` | Limit number of tables to scan | Unlimited |
+| `--exclude-datasets` | Dataset name patterns to skip | `_staging`, `temp_`, `tmp_` |
+| `--skip-views` | Skip views, scan only tables | Include views |
+| `--use-dataplex` | Enable Dataplex column profiling | Disabled |
+| `--dataplex-location` | Dataplex region | `us-central1` |
+| `--use-gemini` | Enable Gemini AI descriptions | Disabled |
+| `--skip-gemini` | Disable Gemini (overrides --use-gemini) | Enabled if API key set |
+| `--workers` | Number of parallel threads | Auto-detect CPU cores |
+| `--skip-gcs` | Don't upload to GCS | Upload enabled |
+| `--skip-markdown` | Don't generate markdown reports | Reports enabled |
+| `--import` | Trigger Vertex AI Search import | Import by default |
+| `--skip-import` | Don't import to Vertex AI Search | Import enabled |
+| `--export-to-bigquery` | Export metadata to BigQuery table | Disabled |
+| `--bq-dataset` | BigQuery dataset for export | `data_discovery` |
+| `--bq-table` | BigQuery table for export | `discovered_assets` |
+| `-v, --verbose` | Enable debug logging | Info level |
+
+### Label-Based Filtering
+
+Exclude specific datasets or tables from scans using BigQuery labels:
+
+```bash
+# Add label to a dataset
+bq update --set_label ignore-discovery-scan:true your_project:your_dataset
+
+# Add label to a specific table
+bq update --set_label ignore-discovery-scan:true \
+  your_project:your_dataset.your_table
+```
+
+The scanner respects this label by default. Use `--filter-label-key` to customize the label name.
+
+### Cloud Composer / Airflow DAG
+
+For scheduled, production-grade metadata collection, use the provided Airflow orchestration tasks.
+
+#### Example DAG
+
+```python
+from airflow import DAG
+from airflow.operators.python import PythonOperator
+from datetime import datetime, timedelta
+
+from data_discovery_agent.orchestration.tasks import (
+    collect_metadata_task,
+    export_to_bigquery_task,
+    export_markdown_reports_task,
+    import_to_vertex_ai_task,
+)
+
+default_args = {
+    'owner': 'data-engineering',
+    'depends_on_past': False,
+    'email_on_failure': True,
+    'email_on_retry': False,
+    'retries': 2,
+    'retry_delay': timedelta(minutes=5),
+}
+
+with DAG(
+    'bigquery_metadata_collection',
+    default_args=default_args,
+    description='Collect BigQuery metadata and index in Vertex AI Search',
+    schedule_interval='0 2 * * *',  # Daily at 2 AM
+    start_date=datetime(2024, 1, 1),
+    catchup=False,
+    params={
+        'collector_args': {
+            'use_dataplex': True,
+            'use_gemini': True,
+            'workers': 5,
+            'exclude_datasets': ['_staging', 'temp_', 'tmp_'],
+        }
+    },
+) as dag:
+
+    collect_metadata = PythonOperator(
+        task_id='collect_metadata',
+        python_callable=collect_metadata_task,
+        provide_context=True,
+    )
+
+    export_to_bigquery = PythonOperator(
+        task_id='export_to_bigquery',
+        python_callable=export_to_bigquery_task,
+        provide_context=True,
+    )
+
+    export_markdown = PythonOperator(
+        task_id='export_markdown_reports',
+        python_callable=export_markdown_reports_task,
+        provide_context=True,
+    )
+
+    import_to_vertex = PythonOperator(
+        task_id='import_to_vertex_ai',
+        python_callable=import_to_vertex_ai_task,
+        provide_context=True,
+    )
+
+    # Task dependencies
+    collect_metadata >> [export_to_bigquery, export_markdown]
+    export_to_bigquery >> import_to_vertex
+```
+
+#### Configure in Cloud Composer
+
+1. Set environment variables in your Cloud Composer environment:
+   - `GCP_PROJECT_ID`
+   - `GCS_JSONL_BUCKET`
+   - `GCS_REPORTS_BUCKET`
+   - `VERTEX_DATASTORE_ID`
+   - `GEMINI_API_KEY` (optional)
+   - `BQ_DATASET` (optional, default: `data_discovery`)
+   - `BQ_TABLE` (optional, default: `discovered_assets`)
+
+2. Deploy the DAG to your Cloud Composer DAGs folder
+
+3. Trigger manually or let it run on schedule
+
+See [`src/data_discovery_agent/orchestration/tasks.py`](src/data_discovery_agent/orchestration/tasks.py) for complete task documentation.
+
+### MCP Server for AI Assistants
+
+The MCP (Model Context Protocol) server enables AI assistants like Cursor and Claude Desktop to discover and understand your BigQuery data estate.
+
+#### What is MCP?
+
+MCP is an open standard that allows AI assistants to securely access tools and context from external systems. This project implements an MCP server that exposes BigQuery metadata discovery as tools for AI assistants.
+
+#### Available MCP Tools
+
+1. **`query_data_assets`** - Search for tables using natural language
+2. **`get_asset_details`** - Get comprehensive documentation for a specific table
+3. **`list_datasets`** - Browse all datasets in a project
+
+#### Setup for Cursor
+
+Add to your Cursor MCP configuration file (`~/.cursor/mcp.json` or `<project>/.cursor/mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "data-discovery": {
+      "command": "poetry",
+      "args": ["run", "python", "-m", "data_discovery_agent.mcp"],
+      "env": {
+        "GCP_PROJECT_ID": "your-project-id",
+        "VERTEX_DATASTORE_ID": "data-discovery-metadata",
+        "VERTEX_LOCATION": "global",
+        "GCS_REPORTS_BUCKET": "your-reports-bucket",
+        "MCP_TRANSPORT": "stdio"
+      }
+    }
+  }
+}
+```
+
+#### Setup for Claude Desktop
+
+Add to `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS):
+
+```json
+{
+  "mcpServers": {
+    "data-discovery": {
+      "command": "/path/to/poetry",
+      "args": ["run", "python", "-m", "data_discovery_agent.mcp"],
+      "env": {
+        "GCP_PROJECT_ID": "your-project-id",
+        "VERTEX_DATASTORE_ID": "data-discovery-metadata",
+        "VERTEX_LOCATION": "global",
+        "GCS_REPORTS_BUCKET": "your-reports-bucket",
+        "MCP_TRANSPORT": "stdio"
+      }
+    }
+  }
+}
+```
+
+#### Example Queries Through AI Assistant
+
+Once configured, you can ask your AI assistant questions like:
+
+- "Find tables with customer PII data"
+- "Show me all tables in the analytics dataset"
+- "What are the most expensive tables to query?"
+- "Get details for project.dataset.table_name"
+- "Find tables updated in the last 7 days"
+- "Show tables with more than 1 million rows"
+
+The AI assistant will use the MCP tools to search your BigQuery metadata and provide comprehensive answers.
+
+#### HTTP Mode (Remote/Container Deployment)
+
+For containerized deployments, run the MCP server in HTTP mode:
+
+```bash
+# Set environment
+export MCP_TRANSPORT=http
+export MCP_HOST=0.0.0.0
+export MCP_PORT=8080
+
+# Run server
+poetry run python -m data_discovery_agent.mcp.http_server
+```
+
+Then configure clients to connect via HTTP:
+
+```json
+{
+  "mcpServers": {
+    "data-discovery": {
+      "url": "http://localhost:8080"
+    }
+  }
+}
+```
+
+See [`docs/MCP_CLIENT_GUIDE.md`](docs/MCP_CLIENT_GUIDE.md) for detailed MCP usage documentation.
+
+## Configuration Reference
+
+### Environment Variables
+
+| Variable | Description | Required | Default |
+|----------|-------------|----------|---------|
+| `GCP_PROJECT_ID` | Your GCP project ID | Yes | - |
+| `GCS_JSONL_BUCKET` | GCS bucket for JSONL exports | Yes | - |
+| `GCS_REPORTS_BUCKET` | GCS bucket for markdown reports | Yes | - |
+| `VERTEX_DATASTORE_ID` | Vertex AI Search datastore ID | Yes | - |
+| `VERTEX_LOCATION` | Vertex AI Search location | No | `global` |
+| `GEMINI_API_KEY` | Gemini API key for AI descriptions | No | - |
+| `BQ_DATASET` | BigQuery dataset for metadata export | No | `data_discovery` |
+| `BQ_TABLE` | BigQuery table for metadata export | No | `discovered_assets` |
+| `BQ_LOCATION` | BigQuery dataset location | No | `US` |
+| `LINEAGE_ENABLED` | Enable lineage tracking | No | `true` |
+| `LINEAGE_LOCATION` | Lineage API region | No | `us-central1` |
+| `MCP_TRANSPORT` | MCP transport mode (`stdio` or `http`) | No | `stdio` |
+| `MCP_HOST` | MCP HTTP server host | No | `0.0.0.0` |
+| `MCP_PORT` | MCP HTTP server port | No | `8080` |
+
+See [`.env.example`](.env.example) for the complete configuration template.
+
+### Performance Tuning
+
+#### Multi-Threading
+
+The scanner uses multi-threading for parallel table collection. By default, it auto-detects the number of CPU cores. Adjust with `--workers`:
+
+```bash
+# Use 10 worker threads
+poetry run python scripts/collect-bigquery-metadata.py --workers 10
+
+# Use 1 worker (sequential processing)
+poetry run python scripts/collect-bigquery-metadata.py --workers 1
+```
+
+**Performance Impact:**
+- 5 workers (default on most systems): ~5x faster than sequential
+- 10 workers: ~8-10x faster (diminishing returns beyond CPU count)
+- Consider BigQuery quota limits when increasing workers
+
+#### Dataplex Profiling
+
+Dataplex provides richer column statistics but adds API calls:
+
+```bash
+# Without Dataplex: Faster, basic stats only
+poetry run python scripts/collect-bigquery-metadata.py
+
+# With Dataplex: Slower, detailed profiling
+poetry run python scripts/collect-bigquery-metadata.py --use-dataplex
+```
+
+## Output
+
+### JSONL Documents
+
+Structured metadata exported to GCS for Vertex AI Search ingestion:
+
+- **Location:** `gs://{GCS_JSONL_BUCKET}/batch_{timestamp}.jsonl`
+- **Format:** One JSON document per table with schema, stats, lineage, security metadata
+- **Auto-imported** to Vertex AI Search (indexing takes 5-10 minutes)
+
+### Markdown Reports
+
+Human-readable documentation generated for each table:
+
+- **Location:** `gs://{GCS_REPORTS_BUCKET}/reports/{timestamp}/{project}/{dataset}/{table}.md`
+- **Contents:** Schema, statistics, sample values, lineage, quality metrics, insights
+- **Accessible** via MCP `get_asset_details` tool
+
+### BigQuery Export (Optional)
+
+Metadata can be exported to a BigQuery table for analysis:
+
+```bash
+poetry run python scripts/collect-bigquery-metadata.py --export-to-bigquery
+```
+
+Table schema includes:
+- All metadata fields (schema, statistics, lineage)
+- `run_timestamp` for tracking collection runs
+- Enables SQL queries over your metadata catalog
+
+### Lineage Tracking (Automatic)
+
+Data Catalog Lineage API automatically tracks:
+- **BigQuery → BigQuery export:** Collection process → Metadata table
+- **BigQuery → GCS reports:** Table → Markdown documentation
+- Enables lineage visualization in Data Catalog
+
+## Documentation
+
+- **[MCP Client Guide](docs/MCP_CLIENT_GUIDE.md)** - Detailed MCP server usage and integration
+- **[Architecture](docs/ARCHITECTURE.md)** - System design and components
+- **[Pipeline Setup](docs/PIPELINE_SETUP.md)** - Cloud Composer and Airflow configuration
+- **[Docker Deployment](docs/DOCKER_DEPLOYMENT.md)** - Container deployment guide
+
+## Development
+
+### Install Development Dependencies
+
+```bash
+poetry install
 ```
 
 ### Run Tests
 
 ```bash
-pytest
+poetry run pytest
 ```
 
 ### Code Formatting
 
 ```bash
-black src/
-ruff check src/
+poetry run black src/
+poetry run ruff check src/
 ```
 
-## 🚦 Next Steps
+## Contributing
 
-### Immediate
-1. ✅ Complete Phase 1 (DONE!)
-2. ✅ Complete Phase 2.1 (DONE!)
-3. **Wait 5-10 minutes** for Vertex AI Search indexing
-4. **Test search** with your BigQuery metadata
+Contributions are welcome! Please:
 
-### Phase 2.2+ (Enhanced Discovery)
-1. Add Dataplex metadata integration
-2. Build Data Catalog lineage analyzer
-3. Add Cloud Billing API for precise costs
-4. Create scheduled collection (Cloud Scheduler)
-5. Set up incremental updates
+1. Fork the repository
+2. Create a feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit your changes (`git commit -m 'Add amazing feature'`)
+4. Push to the branch (`git push origin feature/amazing-feature`)
+5. Open a Pull Request
 
-### Phase 3 (Smart Router)
-1. Build query classifier
-2. Implement routing logic
-3. Integrate cached and live paths
-4. Add result merging
+## License
 
-### Phase 4+ (Live Agents)
-1. Deep inspection agent
-2. Data profiling agent
-3. Query analysis agent
-4. Cost optimization agent
+This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENSE) file for details.
 
-## 🤝 Contributing
-
-This is an internal project for BigQuery data discovery. For questions or issues:
-- Review documentation in `docs/`
-- Check project plan in `.cursor/plans/`
-- Contact the development team
-
-## 📄 License
-
-Internal use only.
-
-## 🎉 Acknowledgments
+## Acknowledgments
 
 Built with:
-- Google Cloud Platform (GKE, BigQuery, Vertex AI Search)
-- Google GenAI Toolbox (MCP agents)
-- Terraform (Infrastructure as Code)
-- Python + Pydantic (Data models)
-- Vertex AI Search (Semantic search)
-
----
-
-**Current Status**: Phase 0, Phase 1, and Phase 2.1 Complete ✅  
-**Production Ready**: Automated BigQuery metadata discovery  
-**Ready for**: Natural language metadata search and Phase 2.2+ 🚀
+- **Google Cloud Platform** - BigQuery, Vertex AI Search, Dataplex, Data Catalog
+- **Gemini AI** - Automated table and column descriptions
+- **Model Context Protocol (MCP)** - AI assistant integration
+- **Poetry** - Dependency management
+- **Python** - Core implementation

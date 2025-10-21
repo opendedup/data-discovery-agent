@@ -8,7 +8,7 @@ different components (BigQuery writes, GCS writes, etc.).
 import logging
 import os
 from datetime import datetime, timezone
-from typing import List, Optional, Dict, Any
+from typing import List, Optional
 
 from google.cloud import datacatalog_lineage_v1
 
