@@ -23,6 +23,7 @@ from .tools import (
     QUERY_DATA_ASSETS_TOOL,
     GET_ASSET_DETAILS_TOOL,
     LIST_DATASETS_TOOL,
+    GET_DATASETS_FOR_QUERY_GENERATION_TOOL,
 )
 from .handlers import MCPHandlers
 
@@ -123,6 +124,9 @@ def create_mcp_server(config: MCPConfig | None = None) -> Server:
             
             elif name == LIST_DATASETS_TOOL:
                 return await handlers.handle_list_datasets(arguments)
+            
+            elif name == GET_DATASETS_FOR_QUERY_GENERATION_TOOL:
+                return await handlers.handle_get_datasets_for_query_generation(arguments)
             
             else:
                 error_msg = f"Unknown tool: {name}"

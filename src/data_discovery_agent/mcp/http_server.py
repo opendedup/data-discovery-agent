@@ -293,6 +293,7 @@ def create_http_app() -> FastAPI:
                     QUERY_DATA_ASSETS_TOOL,
                     GET_ASSET_DETAILS_TOOL,
                     LIST_DATASETS_TOOL,
+                    GET_DATASETS_FOR_QUERY_GENERATION_TOOL,
                     validate_query_params,
                 )
                 
@@ -316,6 +317,8 @@ def create_http_app() -> FastAPI:
                     result = await handlers_instance.handle_get_asset_details(arguments)
                 elif tool_name == LIST_DATASETS_TOOL:
                     result = await handlers_instance.handle_list_datasets(arguments)
+                elif tool_name == GET_DATASETS_FOR_QUERY_GENERATION_TOOL:
+                    result = await handlers_instance.handle_get_datasets_for_query_generation(arguments)
                 else:
                     return {
                         "jsonrpc": "2.0",
@@ -435,6 +438,7 @@ def create_http_app() -> FastAPI:
                 QUERY_DATA_ASSETS_TOOL,
                 GET_ASSET_DETAILS_TOOL,
                 LIST_DATASETS_TOOL,
+                GET_DATASETS_FOR_QUERY_GENERATION_TOOL,
                 validate_query_params,
             )
             
@@ -448,6 +452,8 @@ def create_http_app() -> FastAPI:
                 result = await handlers_instance.handle_get_asset_details(arguments)
             elif tool_name == LIST_DATASETS_TOOL:
                 result = await handlers_instance.handle_list_datasets(arguments)
+            elif tool_name == GET_DATASETS_FOR_QUERY_GENERATION_TOOL:
+                result = await handlers_instance.handle_get_datasets_for_query_generation(arguments)
             else:
                 raise HTTPException(status_code=404, detail=f"Unknown tool: {tool_name}")
             

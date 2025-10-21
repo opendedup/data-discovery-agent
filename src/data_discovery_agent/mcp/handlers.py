@@ -9,9 +9,16 @@ import json
 import logging
 from typing import Any, Dict, List, Optional
 from google.cloud import storage
+from datetime import datetime, timezone
 
 from ..clients.vertex_search_client import VertexSearchClient
 from ..models.search_models import SearchRequest, SortOrder
+from ..schemas.asset_schema import (
+    DiscoveredAssetDict,
+    SchemaFieldDict,
+    LabelDict,
+    LineageDict,
+)
 from .config import MCPConfig
 from .tools import format_tool_response, format_error_response
 
@@ -202,6 +209,87 @@ class MCPHandlers:
         except Exception as e:
             logger.error(f"Error handling get_asset_details: {e}", exc_info=True)
             return format_error_response(str(e), "get_asset_details")
+    
+    async def handle_get_datasets_for_query_generation(
+        self,
+        arguments: Dict[str, Any],
+    ) -> List[Any]:
+        """
+        Handle get_datasets_for_query_generation tool call.
+        
+        Searches for BigQuery datasets and returns structured metadata
+        in the format required by the Query Generation Agent.
+        
+        Args:
+            arguments: Tool arguments (same as query_data_assets)
+            
+        Returns:
+            List of TextContent objects containing JSON data
+        """
+        try:
+            # Build search request (similar to query_data_assets)
+            search_request = SearchRequest(
+                query=arguments["query"],
+                project_id=arguments.get("project_id"),
+                dataset_id=arguments.get("dataset_id"),
+                has_pii=arguments.get("has_pii"),
+                has_phi=arguments.get("has_phi"),
+                environment=arguments.get("environment"),
+                min_row_count=arguments.get("min_row_count"),
+                max_row_count=arguments.get("max_row_count"),
+                min_cost=arguments.get("min_cost"),
+                max_cost=arguments.get("max_cost"),
+                sort_by=arguments.get("sort_by"),
+                sort_order=SortOrder(arguments.get("sort_order", "desc")),
+                page_size=min(
+                    arguments.get("page_size", self.config.default_page_size),
+                    self.config.max_page_size
+                ),
+                page_token=arguments.get("page_token"),
+                include_full_content=True,  # Always include full content for query generation
+            )
+            
+            logger.info(
+                f"Executing search for query generation: query='{search_request.query}'"
+            )
+            
+            # Execute search in thread pool
+            import asyncio
+            loop = asyncio.get_running_loop()
+            
+            search_response = await loop.run_in_executor(
+                None,
+                lambda: self.vertex_client.search(
+                    request=search_request,
+                    timeout=self.config.query_timeout,
+                ),
+            )
+            
+            logger.info(
+                f"Search completed: found {len(search_response.results)} results "
+                f"in {search_response.query_time_ms:.0f}ms"
+            )
+            
+            # Format results for query generation
+            datasets = await self._format_for_query_generation(search_response)
+            
+            # Build response
+            response_data = {
+                "query": search_response.query,
+                "total_count": len(datasets),
+                "datasets": datasets,
+                "has_more_results": search_response.has_more_results,
+                "next_page_token": search_response.next_page_token,
+            }
+            
+            return format_tool_response(json.dumps(response_data, indent=2))
+            
+        except Exception as e:
+            logger.error(
+                f"Error handling get_datasets_for_query_generation: {e}", 
+                exc_info=True
+            )
+            return format_error_response(str(e), "get_datasets_for_query_generation")
     
     async def handle_list_datasets(
         self,
@@ -470,6 +558,244 @@ class MCPHandlers:
             "next_page_token": search_response.next_page_token,
             "results": results,
         }
+    
+    async def _format_for_query_generation(
+        self,
+        search_response: Any,
+    ) -> List[DiscoveredAssetDict]:
+        """
+        Format search results for Query Generation Agent.
+        
+        Transforms search results into the BigQuery writer schema format,
+        which is the canonical format for discovered assets.
+        
+        Args:
+            search_response: SearchResponse object
+            
+        Returns:
+            List of DiscoveredAssetDict objects matching BigQuery schema
+        """
+        datasets = []
+        run_timestamp = datetime.now(timezone.utc).isoformat()
+        
+        for result in search_response.results:
+            metadata = result.metadata
+            
+            # Fetch full markdown content if not already included
+            full_markdown = result.full_content
+            if not full_markdown and result.report_link:
+                try:
+                    full_markdown = await self._fetch_markdown_from_uri(result.report_link)
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to fetch markdown for {metadata.table_id}: {e}"
+                    )
+                    full_markdown = result.snippet or ""
+            
+            # Parse schema fields from markdown or metadata
+            schema_fields = await self._extract_schema_fields(
+                full_markdown, 
+                metadata
+            )
+            
+            # Parse labels from metadata if available
+            labels: List[LabelDict] = []
+            if hasattr(metadata, 'labels') and metadata.labels:
+                if isinstance(metadata.labels, dict):
+                    labels = [
+                        LabelDict(key=k, value=v) 
+                        for k, v in metadata.labels.items()
+                    ]
+            
+            # Parse tags
+            tags = metadata.tags if metadata.tags else []
+            
+            # Build dataset object in BigQuery schema format
+            asset_type = metadata.asset_type or "TABLE"
+            dataset_obj: DiscoveredAssetDict = {
+                # Core identifiers
+                "table_id": metadata.table_id or "",
+                "project_id": metadata.project_id or "",
+                "dataset_id": metadata.dataset_id or "",
+                
+                # Metadata
+                "description": result.snippet or full_markdown[:500] if full_markdown else "",
+                "table_type": asset_type,
+                "asset_type": asset_type,  # For backwards compatibility with query generation agent
+                
+                # Timestamps (ISO format)
+                "created": metadata.created_at if metadata.created_at else None,
+                "last_modified": metadata.last_modified if metadata.last_modified else None,
+                "last_accessed": metadata.last_accessed if metadata.last_accessed else None,
+                
+                # Statistics
+                "row_count": metadata.row_count,
+                "column_count": metadata.column_count,
+                "size_bytes": metadata.size_bytes,
+                
+                # Security & Governance
+                "has_pii": metadata.has_pii or False,
+                "has_phi": metadata.has_phi or False,
+                "environment": metadata.environment,
+                
+                # Labels and tags
+                "labels": labels,
+                
+                # Schema
+                "schema": schema_fields,
+                
+                # AI-generated insights (empty for now, can be populated later)
+                "analytical_insights": [],
+                
+                # Lineage (empty for now, would need separate lineage query)
+                "lineage": [],
+                
+                # Profiling (empty for now, would need separate profiling)
+                "column_profiles": [],
+                
+                # Metrics
+                "key_metrics": self._extract_key_metrics(metadata),
+                
+                # Run metadata
+                "run_timestamp": run_timestamp,
+                "insert_timestamp": "AUTO",
+                
+                # Additional fields for MCP/query generation
+                "full_markdown": full_markdown or "",
+                "owner_email": metadata.owner_email,
+                "tags": tags,
+            }
+            
+            datasets.append(dataset_obj)
+        
+        return datasets
+    
+    def _extract_key_metrics(self, metadata: Any) -> List[Dict[str, str]]:
+        """
+        Extract key metrics from metadata.
+        
+        Args:
+            metadata: Asset metadata object
+            
+        Returns:
+            List of key metric dictionaries
+        """
+        metrics = []
+        
+        if hasattr(metadata, 'completeness_score') and metadata.completeness_score is not None:
+            metrics.append({
+                "metric_name": "completeness_score",
+                "metric_value": str(metadata.completeness_score)
+            })
+        
+        if hasattr(metadata, 'freshness_score') and metadata.freshness_score is not None:
+            metrics.append({
+                "metric_name": "freshness_score",
+                "metric_value": str(metadata.freshness_score)
+            })
+        
+        if hasattr(metadata, 'monthly_cost_usd') and metadata.monthly_cost_usd is not None:
+            metrics.append({
+                "metric_name": "monthly_cost_usd",
+                "metric_value": str(metadata.monthly_cost_usd)
+            })
+        
+        return metrics
+    
+    async def _extract_schema_fields(
+        self,
+        markdown_content: Optional[str],
+        metadata: Any,
+    ) -> List[SchemaFieldDict]:
+        """
+        Extract schema fields from markdown documentation.
+        
+        Parses the Schema section of the markdown documentation to extract
+        field names, types, and descriptions.
+        
+        Args:
+            markdown_content: Full markdown documentation
+            metadata: Asset metadata
+            
+        Returns:
+            List of SchemaFieldDict objects matching BigQuery schema
+        """
+        schema_fields: List[SchemaFieldDict] = []
+        
+        if not markdown_content:
+            return schema_fields
+        
+        try:
+            # Look for Schema section in markdown
+            # Common format: ## Schema or ### Schema
+            lines = markdown_content.split('\n')
+            in_schema_section = False
+            in_table = False
+            
+            for i, line in enumerate(lines):
+                # Detect schema section header
+                if line.strip().lower() in ['## schema', '### schema', '#### schema']:
+                    in_schema_section = True
+                    continue
+                
+                # Exit schema section on next header
+                if in_schema_section and line.strip().startswith('#'):
+                    break
+                
+                # Look for table header (markdown table format)
+                if in_schema_section and '|' in line:
+                    if 'Field' in line or 'Column' in line or 'Name' in line:
+                        in_table = True
+                        continue
+                    
+                    # Skip separator line
+                    if in_table and line.strip().startswith('|---') or line.strip().startswith('| ---'):
+                        continue
+                    
+                    # Parse table row
+                    if in_table:
+                        parts = [p.strip() for p in line.split('|')]
+                        # Remove empty first/last elements from split
+                        parts = [p for p in parts if p]
+                        
+                        if len(parts) >= 2:
+                            field_name = parts[0].strip()
+                            field_type = parts[1].strip() if len(parts) > 1 else "STRING"
+                            field_mode = parts[2].strip() if len(parts) > 2 else None
+                            field_desc = parts[3].strip() if len(parts) > 3 else ""
+                            
+                            # Skip if looks like header row
+                            if field_name.lower() in ['field', 'column', 'name']:
+                                continue
+                            
+                            # If only 3 columns, assume format is: name | type | description
+                            if len(parts) == 3:
+                                field_mode = None
+                                field_desc = parts[2].strip()
+                            
+                            schema_fields.append(SchemaFieldDict(
+                                name=field_name,
+                                type=field_type,
+                                mode=field_mode,
+                                description=field_desc,
+                                sample_values=None  # Could be extracted later
+                            ))
+            
+            logger.debug(
+                f"Extracted {len(schema_fields)} schema fields from markdown"
+            )
+            
+        except Exception as e:
+            logger.warning(f"Error extracting schema fields: {e}")
+        
+        # If no fields extracted, return at least empty structure
+        if not schema_fields:
+            logger.warning(
+                f"No schema fields extracted for {metadata.table_id}, "
+                "returning empty schema"
+            )
+        
+        return schema_fields
     
     def _format_no_results_response(
         self,

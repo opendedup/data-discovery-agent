@@ -13,6 +13,7 @@ from mcp.types import Tool, TextContent
 QUERY_DATA_ASSETS_TOOL = "query_data_assets"
 GET_ASSET_DETAILS_TOOL = "get_asset_details"
 LIST_DATASETS_TOOL = "list_datasets"
+GET_DATASETS_FOR_QUERY_GENERATION_TOOL = "get_datasets_for_query_generation"
 
 
 def get_available_tools() -> List[Tool]:
@@ -196,6 +197,91 @@ def get_available_tools() -> List[Tool]:
                 "required": []
             }
         ),
+        
+        Tool(
+            name=GET_DATASETS_FOR_QUERY_GENERATION_TOOL,
+            description=(
+                "Search for BigQuery datasets and return structured metadata in the BigQuery "
+                "writer schema format. Returns comprehensive JSON data including schema fields, "
+                "table metadata, security classifications, lineage, profiling, and complete "
+                "documentation. Output matches the canonical DiscoveredAssetDict schema used "
+                "by the BigQuery writer. Use this when you need to prepare dataset metadata "
+                "for automated query generation or other downstream processing."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": (
+                            "Natural language search query. Examples: "
+                            "'tables with PII data', "
+                            "'customer analytics tables', "
+                            "'tables modified in the last week', "
+                            "'expensive tables with high query costs'"
+                        )
+                    },
+                    "project_id": {
+                        "type": "string",
+                        "description": "Filter by specific GCP project ID"
+                    },
+                    "dataset_id": {
+                        "type": "string",
+                        "description": "Filter by specific BigQuery dataset"
+                    },
+                    "has_pii": {
+                        "type": "boolean",
+                        "description": "Filter tables containing PII (Personally Identifiable Information)"
+                    },
+                    "has_phi": {
+                        "type": "boolean",
+                        "description": "Filter tables containing PHI (Protected Health Information)"
+                    },
+                    "environment": {
+                        "type": "string",
+                        "description": "Filter by environment (e.g., 'production', 'staging', 'development')"
+                    },
+                    "min_row_count": {
+                        "type": "integer",
+                        "description": "Filter tables with at least this many rows"
+                    },
+                    "max_row_count": {
+                        "type": "integer",
+                        "description": "Filter tables with at most this many rows"
+                    },
+                    "min_cost": {
+                        "type": "number",
+                        "description": "Filter tables with monthly cost >= this value (USD)"
+                    },
+                    "max_cost": {
+                        "type": "number",
+                        "description": "Filter tables with monthly cost <= this value (USD)"
+                    },
+                    "sort_by": {
+                        "type": "string",
+                        "description": "Sort results by field (e.g., 'row_count', 'size_bytes', 'monthly_cost_usd', 'last_modified_timestamp')"
+                    },
+                    "sort_order": {
+                        "type": "string",
+                        "enum": ["asc", "desc"],
+                        "description": "Sort order: 'asc' (ascending) or 'desc' (descending)",
+                        "default": "desc"
+                    },
+                    "page_size": {
+                        "type": "integer",
+                        "description": "Number of results to return (max 50)",
+                        "minimum": 1,
+                        "maximum": 50,
+                        "default": 10
+                    },
+                    "page_token": {
+                        "type": "string",
+                        "description": "Token from previous response to get next page of results"
+                    }
+                },
+                "required": ["query"]
+            }
+        ),
     ]
 
 
@@ -288,6 +374,21 @@ def validate_query_params(
     elif tool_name == LIST_DATASETS_TOOL:
         # No required parameters, just validate types if provided
         pass
+    
+    elif tool_name == GET_DATASETS_FOR_QUERY_GENERATION_TOOL:
+        # Validate query
+        if not arguments.get("query"):
+            raise ValueError("'query' parameter is required")
+        
+        # Validate page_size
+        page_size = arguments.get("page_size", 10)
+        if not isinstance(page_size, int) or page_size < 1 or page_size > 50:
+            raise ValueError("'page_size' must be between 1 and 50")
+        
+        # Validate sort_order
+        sort_order = arguments.get("sort_order", "desc")
+        if sort_order not in ["asc", "desc"]:
+            raise ValueError("'sort_order' must be 'asc' or 'desc'")
     
     else:
         raise ValueError(f"Unknown tool: {tool_name}")
