@@ -138,6 +138,34 @@ class PRPDiscoveryClient:
         queries_executed.extend(query_executions)
         logger.info(f"Found {len(candidates)} unique candidate datasets")
         
+        # Step 2.5: Check if we need fan-out (< 3 results)
+        if len(candidates) < 3:
+            logger.info(f"Only {len(candidates)} datasets found, executing fan-out strategy")
+            fanout_queries = await self._generate_fanout_queries(prp_text, queries)
+            
+            # Track fan-out as refinements
+            for fq in fanout_queries:
+                refinements_made.append(QueryRefinement(
+                    original_query=f"Primary queries ({len(queries)} total)",
+                    refined_query=fq,
+                    reason=f"Fan-out query: initial results < 3 (found {len(candidates)})"
+                ))
+            
+            # Execute fan-out searches (reuse existing _search_for_candidates)
+            fanout_candidates, fanout_executions = await self._search_for_candidates(fanout_queries)
+            queries_executed.extend(fanout_executions)
+            
+            # Merge fan-out candidates with existing (avoiding duplicates)
+            new_candidates = 0
+            for fqn, dataset in fanout_candidates.items():
+                if fqn not in candidates:
+                    candidates[fqn] = dataset
+                    new_candidates += 1
+            
+            logger.info(
+                f"Fan-out complete: added {new_candidates} new datasets (total: {len(candidates)})"
+            )
+        
         if not candidates:
             total_time_ms = (time.time() - start_time) * 1000
             metadata = self._build_metadata(
@@ -392,6 +420,122 @@ Generate the search queries now:"""
             queries = list(set(keywords[:5]))
         
         return queries[:self.max_queries] if queries else ["player statistics game data"]
+    
+    async def _generate_fanout_queries(
+        self,
+        prp_text: str,
+        primary_queries: List[str],
+    ) -> List[str]:
+        """
+        Generate broader/related queries for fan-out when primary queries return < 3 results.
+        
+        Reuses SearchFanoutGenerator from data-planning-agent pattern.
+        
+        Args:
+            prp_text: Original PRP text
+            primary_queries: The primary queries that were already executed
+            
+        Returns:
+            List of broader fanout query strings
+        """
+        if not self.gemini.is_enabled:
+            logger.warning("Gemini not available, using keyword fallback for fan-out")
+            return self._generate_fallback_fanout_queries(prp_text, primary_queries)
+        
+        # Import SearchFanoutGenerator (reused from data-planning-agent)
+        from .search_fanout import SearchFanoutGenerator
+        
+        # Create a summary of what we're looking for (from PRP)
+        prp_summary = self._extract_prp_summary(prp_text)
+        
+        # Use SearchFanoutGenerator with PRP context
+        fanout_gen = SearchFanoutGenerator(self.gemini)
+        
+        # Generate related queries based on PRP summary
+        fanout_queries = fanout_gen.generate_related_queries(
+            original_query=prp_summary,
+            num_queries=self.max_queries
+        )
+        
+        logger.info(f"Generated {len(fanout_queries)} fan-out queries")
+        return fanout_queries
+    
+    def _extract_prp_summary(self, prp_text: str) -> str:
+        """
+        Extract a concise summary from PRP for fan-out query generation.
+        
+        Takes key sections from PRP and creates a natural language summary.
+        
+        Args:
+            prp_text: Full PRP markdown text
+            
+        Returns:
+            Concise summary suitable for query generation
+        """
+        summary_parts = []
+        
+        # Extract objective (section 2)
+        obj_match = re.search(
+            r'##\s*2\.\s*Business Objective(.*?)(?=##|\Z)',
+            prp_text,
+            re.DOTALL | re.IGNORECASE
+        )
+        if obj_match:
+            objective = obj_match.group(1).strip()[:200]
+            summary_parts.append(objective)
+        
+        # Extract key metrics (section 4, first 3)
+        metrics_match = re.search(
+            r'##\s*4\.\s*Key Metrics(.*?)(?=##|\Z)',
+            prp_text,
+            re.DOTALL | re.IGNORECASE
+        )
+        if metrics_match:
+            metric_items = re.findall(r'-\s*\*\*(.+?)\*\*', metrics_match.group(1))[:3]
+            if metric_items:
+                summary_parts.append("Metrics: " + ", ".join(metric_items))
+        
+        summary = ". ".join(summary_parts) if summary_parts else prp_text[:300]
+        return summary
+    
+    def _generate_fallback_fanout_queries(
+        self,
+        prp_text: str,
+        primary_queries: List[str],
+    ) -> List[str]:
+        """
+        Fallback method to generate broader queries when Gemini unavailable.
+        
+        Uses simple keyword extraction with broader, less specific terms.
+        
+        Args:
+            prp_text: Original PRP text
+            primary_queries: Primary queries already tried
+            
+        Returns:
+            List of broader query strings
+        """
+        fanout_queries = []
+        
+        # Extract domain names (Lfndata, Abndata, etc.)
+        domains = re.findall(r'([A-Z][a-z]+data)\s+domain', prp_text, re.IGNORECASE)
+        fanout_queries.extend([d.lower() for d in set(domains)])
+        
+        # Extract entity types (player, game, team, etc.)
+        entities = re.findall(
+            r'\b(player|game|team|customer|user|product|order)\w*\b',
+            prp_text,
+            re.IGNORECASE
+        )
+        fanout_queries.extend([e.lower() + " data" for e in list(set(entities))[:2]])
+        
+        # Add generic broader terms based on PRP content
+        if "statistic" in prp_text.lower() or "metric" in prp_text.lower():
+            fanout_queries.append("statistics")
+        if "analytics" in prp_text.lower():
+            fanout_queries.append("analytics data")
+        
+        return list(set(fanout_queries))[:self.max_queries]
     
     async def _search_for_candidates(
         self,
@@ -723,6 +867,15 @@ Your score:"""
                 "candidates_after_deduplication": deduped_candidates,
                 "candidates_after_scoring": scored_candidates,
                 "total_execution_time_ms": round(total_time_ms, 2),
+                # Fan-out tracking
+                "fanout_triggered": any(
+                    r.reason and "fan-out" in r.reason.lower()
+                    for r in refinements_made
+                ) if refinements_made else False,
+                "fanout_queries_count": sum(
+                    1 for r in refinements_made
+                    if r.reason and "fan-out" in r.reason.lower()
+                ) if refinements_made else 0,
             }
         }
 

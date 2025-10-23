@@ -11,6 +11,9 @@
 		},
 		{
 			"path": "../../data-planning-agent"
+		},
+		{
+			"path": "../../data-graphql-agent"
 		}
 	],
 	"settings": {}

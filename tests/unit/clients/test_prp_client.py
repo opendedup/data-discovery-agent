@@ -104,7 +104,7 @@ async def test_discover_datasets_for_prp_success(
         return_value=(mock_queries, mock_refinements)
     )
     
-    # Mock candidate search
+    # Mock candidate search - return 3+ to avoid triggering fan-out
     mock_candidates = {
         "proj.dataset.table1": {
             "table_id": "table1",
@@ -112,7 +112,21 @@ async def test_discover_datasets_for_prp_success(
             "dataset_id": "dataset",
             "description": "Player statistics",
             "relevance_score": 85.0,
-        }
+        },
+        "proj.dataset.table2": {
+            "table_id": "table2",
+            "project_id": "proj",
+            "dataset_id": "dataset",
+            "description": "Game schedules",
+            "relevance_score": 80.0,
+        },
+        "proj.dataset.table3": {
+            "table_id": "table3",
+            "project_id": "proj",
+            "dataset_id": "dataset",
+            "description": "Defensive rankings",
+            "relevance_score": 75.0,
+        },
     }
     from src.data_discovery_agent.clients.prp_client import QueryExecution
     mock_query_executions = [
@@ -120,7 +134,7 @@ async def test_discover_datasets_for_prp_success(
             query=mock_queries[0],
             results_count=10,
             execution_time_ms=150.0,
-            top_tables=["proj.dataset.table1"],
+            top_tables=["proj.dataset.table1", "proj.dataset.table2", "proj.dataset.table3"],
             status="success"
         )
     ]
@@ -132,7 +146,9 @@ async def test_discover_datasets_for_prp_success(
     
     # Mock relevance scoring
     scored_datasets = [
-        {**mock_candidates["proj.dataset.table1"], "relevance_score": 85.0}
+        {**mock_candidates["proj.dataset.table1"], "relevance_score": 85.0},
+        {**mock_candidates["proj.dataset.table2"], "relevance_score": 80.0},
+        {**mock_candidates["proj.dataset.table3"], "relevance_score": 75.0},
     ]
     mocker.patch.object(
         prp_client,
@@ -147,8 +163,8 @@ async def test_discover_datasets_for_prp_success(
     )
     
     # Assertions
-    assert result["total_count"] == 1
-    assert len(result["datasets"]) == 1
+    assert result["total_count"] == 3
+    assert len(result["datasets"]) == 3
     assert result["datasets"][0]["relevance_score"] == 85.0
     
     # Check metadata
@@ -439,4 +455,342 @@ async def test_score_dataset_relevance_without_gemini(
     
     assert len(scored) == 1
     assert scored[0]["relevance_score"] == 70.0  # Neutral fallback score
+
+
+@pytest.mark.asyncio
+async def test_discover_datasets_fanout_with_one_result(
+    prp_client: PRPDiscoveryClient,
+    sample_prp_text: str,
+    mocker: "MockerFixture"
+) -> None:
+    """Test that fan-out is triggered when only 1 result is found."""
+    # Mock primary query generation
+    primary_queries = ["specific query"]
+    mocker.patch.object(
+        prp_client,
+        "_generate_queries_from_prp",
+        return_value=(primary_queries, [])
+    )
+    
+    # Mock primary search returning 1 result
+    mock_primary_candidates = {
+        "proj.dataset.table1": {
+            "table_id": "table1",
+            "project_id": "proj",
+            "dataset_id": "dataset",
+            "description": "Primary result",
+        }
+    }
+    from src.data_discovery_agent.clients.prp_client import QueryExecution
+    
+    # Mock fan-out query generation
+    fanout_queries = ["broader query 1", "broader query 2"]
+    mocker.patch.object(
+        prp_client,
+        "_generate_fanout_queries",
+        return_value=fanout_queries
+    )
+    
+    # Mock fan-out search returning additional results
+    mock_fanout_candidates = {
+        "proj.dataset.table2": {
+            "table_id": "table2",
+            "project_id": "proj",
+            "dataset_id": "dataset",
+            "description": "Fan-out result",
+        }
+    }
+    
+    # _search_for_candidates will be called twice: primary and fan-out
+    search_calls = [
+        (mock_primary_candidates, [QueryExecution(
+            query="specific query",
+            results_count=1,
+            execution_time_ms=100.0,
+            top_tables=["proj.dataset.table1"],
+            status="success"
+        )]),
+        (mock_fanout_candidates, [QueryExecution(
+            query="broader query 1",
+            results_count=1,
+            execution_time_ms=120.0,
+            top_tables=["proj.dataset.table2"],
+            status="success"
+        )])
+    ]
+    mocker.patch.object(
+        prp_client,
+        "_search_for_candidates",
+        side_effect=search_calls
+    )
+    
+    # Mock scoring
+    mocker.patch.object(
+        prp_client,
+        "_score_dataset_relevance",
+        return_value=[
+            {**mock_primary_candidates["proj.dataset.table1"], "relevance_score": 80.0},
+            {**mock_fanout_candidates["proj.dataset.table2"], "relevance_score": 75.0},
+        ]
+    )
+    
+    result = await prp_client.discover_datasets_for_prp(
+        prp_text=sample_prp_text,
+        max_results=10
+    )
+    
+    # Assertions
+    assert result["total_count"] == 2
+    assert len(result["datasets"]) == 2
+    
+    # Verify fan-out was triggered
+    metadata = result["discovery_metadata"]
+    assert metadata["summary"]["fanout_triggered"] is True
+    assert metadata["summary"]["fanout_queries_count"] == 2
+    
+    # Verify _generate_fanout_queries was called
+    prp_client._generate_fanout_queries.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_discover_datasets_fanout_with_two_results(
+    prp_client: PRPDiscoveryClient,
+    sample_prp_text: str,
+    mocker: "MockerFixture"
+) -> None:
+    """Test that fan-out is triggered when 2 results are found."""
+    # Mock primary query generation
+    mocker.patch.object(
+        prp_client,
+        "_generate_queries_from_prp",
+        return_value=(["query1"], [])
+    )
+    
+    # Mock primary search returning 2 results
+    mock_primary_candidates = {
+        "proj.dataset.table1": {"table_id": "table1", "project_id": "proj", "dataset_id": "dataset"},
+        "proj.dataset.table2": {"table_id": "table2", "project_id": "proj", "dataset_id": "dataset"},
+    }
+    from src.data_discovery_agent.clients.prp_client import QueryExecution
+    
+    # Mock fan-out
+    mocker.patch.object(
+        prp_client,
+        "_generate_fanout_queries",
+        return_value=["broader query"]
+    )
+    
+    # Search calls: primary (2 results) + fan-out (1 more result)
+    search_calls = [
+        (mock_primary_candidates, [QueryExecution(
+            query="query1", results_count=2, execution_time_ms=100.0,
+            top_tables=["proj.dataset.table1", "proj.dataset.table2"], status="success"
+        )]),
+        ({"proj.dataset.table3": {"table_id": "table3", "project_id": "proj", "dataset_id": "dataset"}},
+         [QueryExecution(query="broader query", results_count=1, execution_time_ms=110.0,
+                        top_tables=["proj.dataset.table3"], status="success")])
+    ]
+    mocker.patch.object(prp_client, "_search_for_candidates", side_effect=search_calls)
+    
+    # Mock scoring
+    mocker.patch.object(
+        prp_client,
+        "_score_dataset_relevance",
+        return_value=[
+            {"table_id": "table1", "relevance_score": 80.0},
+            {"table_id": "table2", "relevance_score": 75.0},
+            {"table_id": "table3", "relevance_score": 70.0},
+        ]
+    )
+    
+    result = await prp_client.discover_datasets_for_prp(
+        prp_text=sample_prp_text,
+        max_results=10
+    )
+    
+    # Fan-out should have been triggered
+    assert result["total_count"] == 3
+    assert result["discovery_metadata"]["summary"]["fanout_triggered"] is True
+
+
+@pytest.mark.asyncio
+async def test_discover_datasets_no_fanout_with_three_results(
+    prp_client: PRPDiscoveryClient,
+    sample_prp_text: str,
+    mocker: "MockerFixture"
+) -> None:
+    """Test that fan-out is NOT triggered when 3 or more results are found."""
+    # Mock primary query generation
+    mocker.patch.object(
+        prp_client,
+        "_generate_queries_from_prp",
+        return_value=(["query1"], [])
+    )
+    
+    # Mock primary search returning 3 results
+    mock_primary_candidates = {
+        "proj.dataset.table1": {"table_id": "table1", "project_id": "proj", "dataset_id": "dataset"},
+        "proj.dataset.table2": {"table_id": "table2", "project_id": "proj", "dataset_id": "dataset"},
+        "proj.dataset.table3": {"table_id": "table3", "project_id": "proj", "dataset_id": "dataset"},
+    }
+    from src.data_discovery_agent.clients.prp_client import QueryExecution
+    
+    mocker.patch.object(
+        prp_client,
+        "_search_for_candidates",
+        return_value=(mock_primary_candidates, [QueryExecution(
+            query="query1", results_count=3, execution_time_ms=100.0,
+            top_tables=list(mock_primary_candidates.keys()), status="success"
+        )])
+    )
+    
+    # Mock fan-out generation (should NOT be called)
+    mock_fanout = mocker.patch.object(
+        prp_client,
+        "_generate_fanout_queries",
+        return_value=[]
+    )
+    
+    # Mock scoring
+    mocker.patch.object(
+        prp_client,
+        "_score_dataset_relevance",
+        return_value=[
+            {"table_id": "table1", "relevance_score": 80.0},
+            {"table_id": "table2", "relevance_score": 75.0},
+            {"table_id": "table3", "relevance_score": 70.0},
+        ]
+    )
+    
+    result = await prp_client.discover_datasets_for_prp(
+        prp_text=sample_prp_text,
+        max_results=10
+    )
+    
+    # Assertions
+    assert result["total_count"] == 3
+    
+    # Fan-out should NOT have been triggered
+    assert result["discovery_metadata"]["summary"]["fanout_triggered"] is False
+    assert result["discovery_metadata"]["summary"]["fanout_queries_count"] == 0
+    
+    # Verify _generate_fanout_queries was NOT called
+    mock_fanout.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_generate_fanout_queries_with_gemini(
+    prp_client: PRPDiscoveryClient,
+    sample_prp_text: str,
+    mocker: "MockerFixture"
+) -> None:
+    """Test fan-out query generation with Gemini enabled."""
+    # Mock SearchFanoutGenerator
+    mock_fanout_gen = mocker.Mock()
+    mock_fanout_gen.generate_related_queries.return_value = [
+        "player statistics",
+        "game data analytics",
+        "team performance metrics"
+    ]
+    
+    # Patch SearchFanoutGenerator in the search_fanout module
+    with patch(
+        "src.data_discovery_agent.clients.search_fanout.SearchFanoutGenerator",
+        return_value=mock_fanout_gen
+    ):
+        # Mock PRP summary extraction
+        mocker.patch.object(
+            prp_client,
+            "_extract_prp_summary",
+            return_value="Player performance comparison analysis"
+        )
+        
+        fanout_queries = await prp_client._generate_fanout_queries(
+            prp_text=sample_prp_text,
+            primary_queries=["specific narrow query"]
+        )
+        
+        # Assertions
+        assert len(fanout_queries) == 3
+        assert "player statistics" in fanout_queries
+        assert "game data analytics" in fanout_queries
+        
+        # Verify SearchFanoutGenerator was called correctly
+        mock_fanout_gen.generate_related_queries.assert_called_once_with(
+            original_query="Player performance comparison analysis",
+            num_queries=prp_client.max_queries
+        )
+
+
+@pytest.mark.asyncio
+async def test_generate_fanout_queries_fallback(
+    mocker: "MockerFixture",
+    mock_vertex_client: Mock,
+    sample_prp_text: str
+) -> None:
+    """Test fan-out query generation fallback when Gemini unavailable."""
+    # Create client with disabled Gemini
+    with patch(
+        "src.data_discovery_agent.clients.prp_client.GeminiDescriber"
+    ) as mock_gemini_class:
+        mock_gemini_instance = mocker.Mock()
+        mock_gemini_instance.is_enabled = False
+        mock_gemini_class.return_value = mock_gemini_instance
+        
+        client = PRPDiscoveryClient(
+            vertex_client=mock_vertex_client,
+            gemini_api_key=None,
+        )
+        
+        # Mock fallback method
+        mock_fallback_queries = ["player data", "game data", "lfndata"]
+        mocker.patch.object(
+            client,
+            "_generate_fallback_fanout_queries",
+            return_value=mock_fallback_queries
+        )
+        
+        fanout_queries = await client._generate_fanout_queries(
+            prp_text=sample_prp_text,
+            primary_queries=["specific query"]
+        )
+        
+        # Should use fallback
+        assert fanout_queries == mock_fallback_queries
+        client._generate_fallback_fanout_queries.assert_called_once()
+
+
+def test_extract_prp_summary(
+    prp_client: PRPDiscoveryClient,
+    sample_prp_text: str
+) -> None:
+    """Test extraction of PRP summary for fan-out queries."""
+    summary = prp_client._extract_prp_summary(sample_prp_text)
+    
+    # Should contain objective and metrics
+    assert len(summary) > 0
+    assert "player acquisition" in summary.lower() or "performance comparison" in summary.lower()
+    assert "Metrics:" in summary or "Historical Performance" in summary
+
+
+def test_generate_fallback_fanout_queries(
+    prp_client: PRPDiscoveryClient,
+    sample_prp_text: str
+) -> None:
+    """Test fallback fan-out query generation."""
+    queries = prp_client._generate_fallback_fanout_queries(
+        prp_text=sample_prp_text,
+        primary_queries=["narrow specific query"]
+    )
+    
+    # Should generate some queries
+    assert len(queries) > 0
+    
+    # Should extract entities or domains from PRP
+    query_text = " ".join(queries).lower()
+    # Should find at least one domain or entity
+    assert any(
+        term in query_text 
+        for term in ["player", "game", "lfndata", "abndata", "data", "statistics"]
+    )
 
