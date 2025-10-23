@@ -86,6 +86,73 @@ class BigQueryWriter:
             bigquery.SchemaField("insert_timestamp", "TIMESTAMP", "REQUIRED", description="The UTC timestamp when this metadata record was inserted."),
         ]
 
+    def _flatten_schema_fields(
+        self, 
+        schema_fields: List[Dict[str, Any]], 
+        parent_path: str = "", 
+        parent_mode: str = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Recursively flatten nested RECORD schema fields into dotted paths.
+        
+        Handles arbitrary nesting depth. For REPEATED fields, adds [] notation.
+        Creates separate entries for each leaf field.
+        
+        Examples:
+            user_data (RECORD, REPEATED) with field 'id' -> user_data[].id
+            address (RECORD) with nested city.country -> address.city.country
+            orders[].items[] (nested arrays) -> orders[].items[].field_name
+        
+        Args:
+            schema_fields: List of schema field dictionaries (may contain nested 'fields')
+            parent_path: Accumulated path from parent fields
+            parent_mode: Mode from parent (to propagate REPEATED to children)
+            
+        Returns:
+            Flattened list of schema field dictionaries without nested 'fields' property
+        """
+        flattened = []
+        
+        for field in schema_fields:
+            field_name = field.get("name", "")
+            field_type = field.get("type", "STRING")
+            field_mode = field.get("mode", "NULLABLE")
+            field_description = field.get("description", "")
+            sample_values = field.get("sample_values", [])
+            
+            # Build current path with array notation if needed
+            is_repeated = field_mode == "REPEATED"
+            array_suffix = "[]" if is_repeated else ""
+            
+            if parent_path:
+                current_path = f"{parent_path}.{field_name}{array_suffix}"
+            else:
+                current_path = f"{field_name}{array_suffix}"
+            
+            # Determine effective mode (inherit REPEATED from parent if needed)
+            effective_mode = "REPEATED" if (is_repeated or parent_mode == "REPEATED") else field_mode
+            
+            # If this is a RECORD with nested fields, recurse
+            if field_type == "RECORD" and field.get("fields"):
+                nested_flattened = self._flatten_schema_fields(
+                    schema_fields=field["fields"],
+                    parent_path=current_path,
+                    parent_mode=effective_mode
+                )
+                flattened.extend(nested_flattened)
+            else:
+                # Leaf field - create flattened entry
+                flat_field = {
+                    "name": current_path,
+                    "type": field_type,
+                    "mode": effective_mode if effective_mode != "NULLABLE" else None,
+                    "description": field_description,
+                    "sample_values": sample_values
+                }
+                flattened.append(flat_field)
+        
+        return flattened
+
     def _create_dataset_if_not_exists(self):
         """Creates the BigQuery dataset if it does not already exist."""
         dataset_ref = self.client.dataset(self.dataset_id)
@@ -159,6 +226,18 @@ class BigQueryWriter:
             self.run_timestamp = datetime.now(timezone.utc)
             logger.info(f"Starting BigQuery write operation for {len(assets)} assets.")
             logger.info(f"Run timestamp: {self.run_timestamp.isoformat()}")
+
+            # Flatten nested schema fields before insertion
+            for asset in assets:
+                if "schema" in asset and asset["schema"]:
+                    original_count = len(asset["schema"])
+                    asset["schema"] = self._flatten_schema_fields(asset["schema"])
+                    flattened_count = len(asset["schema"])
+                    if flattened_count != original_count:
+                        logger.debug(
+                            f"Flattened schema for {asset.get('table_id', 'unknown')}: "
+                            f"{original_count} fields -> {flattened_count} flattened fields"
+                        )
 
             # Ensure dataset and table exist
             self._create_dataset_if_not_exists()

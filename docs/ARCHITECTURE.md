@@ -79,9 +79,9 @@ graph TB
       ↓
   export_to_bigquery
       ↓
-  ┌────────────────────┬─────────────────────┐
+  ┌────────────────────┐
   ↓                    ↓                     ↓
-  export_markdown    import_to_vertex_ai    (parallel)
+  export_markdown    import_to_vertex_ai
   ```
 - Uses XCom for data passing between tasks
 - All outputs share the same `run_timestamp` for correlation

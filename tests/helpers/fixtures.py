@@ -117,6 +117,7 @@ def create_sample_asset_schema(
     dataset_id: str = "test_dataset",
     table_id: str = "test_table",
     description: str = "Sample test table for unit testing purposes",
+    schema: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """
     Create a sample asset dict for testing.
@@ -126,30 +127,34 @@ def create_sample_asset_schema(
         dataset_id: Dataset ID
         table_id: Table ID
         description: Table description
+        schema: Optional custom schema fields (defaults to simple 3-field schema)
         
     Returns:
         Dict representing a BigQuery asset
     """
-    schema_fields = [
-        {
-            "name": "id",
-            "type": "STRING",
-            "mode": "REQUIRED",
-            "description": "Unique identifier for the record",
-        },
-        {
-            "name": "name",
-            "type": "STRING",
-            "mode": "NULLABLE",
-            "description": "Name of the entity",
-        },
-        {
-            "name": "created_at",
-            "type": "TIMESTAMP",
-            "mode": "NULLABLE",
-            "description": "Timestamp when the record was created",
-        },
-    ]
+    if schema is None:
+        schema_fields = [
+            {
+                "name": "id",
+                "type": "STRING",
+                "mode": "REQUIRED",
+                "description": "Unique identifier for the record",
+            },
+            {
+                "name": "name",
+                "type": "STRING",
+                "mode": "NULLABLE",
+                "description": "Name of the entity",
+            },
+            {
+                "name": "created_at",
+                "type": "TIMESTAMP",
+                "mode": "NULLABLE",
+                "description": "Timestamp when the record was created",
+            },
+        ]
+    else:
+        schema_fields = schema
 
     return {
         "project_id": project_id,
@@ -319,4 +324,132 @@ def create_sample_lineage_event(
         "start_time": "2024-10-20T10:00:00Z",
         "end_time": "2024-10-20T10:05:00Z",
     }
+
+
+def create_nested_record_asset(
+    table_id: str = "nested_test_table",
+) -> Dict[str, Any]:
+    """
+    Create asset with nested RECORD fields for testing schema flattening.
+    
+    Args:
+        table_id: Table ID for the asset
+    
+    Returns:
+        Dict with nested schema structure
+    """
+    schema_fields = [
+        {
+            "name": "id",
+            "type": "STRING",
+            "mode": "REQUIRED",
+            "description": "Unique identifier",
+        },
+        {
+            "name": "address",
+            "type": "RECORD",
+            "mode": "NULLABLE",
+            "description": "User address information",
+            "fields": [
+                {
+                    "name": "street",
+                    "type": "STRING",
+                    "mode": "NULLABLE",
+                    "description": "Street address",
+                },
+                {
+                    "name": "city",
+                    "type": "STRING",
+                    "mode": "NULLABLE",
+                    "description": "City name",
+                },
+                {
+                    "name": "geo",
+                    "type": "RECORD",
+                    "mode": "NULLABLE",
+                    "description": "Geographic coordinates",
+                    "fields": [
+                        {
+                            "name": "lat",
+                            "type": "FLOAT",
+                            "mode": "NULLABLE",
+                            "description": "Latitude",
+                        },
+                        {
+                            "name": "lon",
+                            "type": "FLOAT",
+                            "mode": "NULLABLE",
+                            "description": "Longitude",
+                        },
+                    ],
+                },
+            ],
+        },
+    ]
+    
+    return create_sample_asset_schema(table_id=table_id, schema=schema_fields)
+
+
+def create_repeated_record_asset(
+    table_id: str = "repeated_test_table",
+) -> Dict[str, Any]:
+    """
+    Create asset with REPEATED RECORD fields (arrays).
+    
+    Args:
+        table_id: Table ID for the asset
+    
+    Returns:
+        Dict with array schema structure
+    """
+    schema_fields = [
+        {
+            "name": "user_id",
+            "type": "STRING",
+            "mode": "REQUIRED",
+            "description": "User identifier",
+        },
+        {
+            "name": "orders",
+            "type": "RECORD",
+            "mode": "REPEATED",
+            "description": "User orders",
+            "fields": [
+                {
+                    "name": "order_id",
+                    "type": "STRING",
+                    "mode": "NULLABLE",
+                    "description": "Order identifier",
+                },
+                {
+                    "name": "total",
+                    "type": "FLOAT",
+                    "mode": "NULLABLE",
+                    "description": "Order total amount",
+                },
+                {
+                    "name": "items",
+                    "type": "RECORD",
+                    "mode": "REPEATED",
+                    "description": "Order items",
+                    "fields": [
+                        {
+                            "name": "product_id",
+                            "type": "STRING",
+                            "mode": "NULLABLE",
+                            "description": "Product identifier",
+                        },
+                        {
+                            "name": "quantity",
+                            "type": "INTEGER",
+                            "mode": "NULLABLE",
+                            "description": "Item quantity",
+                        },
+                    ],
+                },
+            ],
+        },
+    ]
+    
+    return create_sample_asset_schema(table_id=table_id, schema=schema_fields)
 

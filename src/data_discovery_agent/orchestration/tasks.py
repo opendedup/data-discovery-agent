@@ -16,6 +16,11 @@ from data_discovery_agent.search import MarkdownFormatter
 from data_discovery_agent.clients import VertexSearchClient
 from data_discovery_agent.writers.bigquery_writer import BigQueryWriter
 from data_discovery_agent.utils.lineage import record_lineage, format_bigquery_fqn
+from data_discovery_agent.orchestration.gcs_scratch import (
+    write_scratch_json,
+    read_scratch_json,
+    cleanup_old_scratch_files,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -27,52 +32,115 @@ def collect_metadata_task(**context: Any) -> None:
     Configuration is read from environment variables (set in Composer),
     with optional overrides from dag_run.conf for manual runs.
     
+    Records lineage showing BigQuery tables → GCS scratch file as an intermediate
+    step in the metadata collection pipeline.
+    
     Args:
         **context: Airflow context with dag_run and task instance info
         
     Raises:
         ValueError: If no assets are collected or required env vars are missing
     """
-    # Get configuration from environment variables (primary source)
-    project_id = os.getenv('GCP_PROJECT_ID')
-    if not project_id:
-        raise ValueError("GCP_PROJECT_ID environment variable is required")
+    # Track start time for lineage
+    start_time = datetime.now(timezone.utc)
+    is_success = False
+    gcs_path = None
+    collected_tables = []
     
-    filter_label_key = os.getenv('DISCOVERY_FILTER_LABEL_KEY', 'ignore-gmcp-discovery-scan')
+    # Get configuration early for finally block
+    project_id = os.getenv('GCP_PROJECT_ID', '')
+    lineage_location = os.getenv('LINEAGE_LOCATION', 'us-central1')
     
-    # Get default params from DAG definition, then override with dag_run.conf if provided
-    default_params = context.get('params', {})
-    dag_run_conf = context.get('dag_run', {}).conf if context.get('dag_run') else {}
-    
-    # Merge: DAG params as base, override with manual trigger config
-    conf_args = {**default_params.get('collector_args', {}), **dag_run_conf.get('collector_args', {})}
-    
-    logger.info("Starting metadata collection task.")
-    collector = BigQueryCollector(
-        project_id=conf_args.get('project', project_id),
-        target_projects=conf_args.get('projects', [project_id]),
-        exclude_datasets=conf_args.get('exclude_datasets', ['_staging', 'temp_', 'tmp_']),
-        use_dataplex_profiling=conf_args.get('use_dataplex', False),
-        dataplex_location=conf_args.get('dataplex_location', 'us-central1'),
-        use_gemini_descriptions=conf_args.get('use_gemini', True),
-        gemini_api_key=conf_args.get('gemini_api_key', os.getenv('GEMINI_API_KEY')),
-        max_workers=conf_args.get('workers', 2),
-        filter_label_key=conf_args.get('filter_label_key', filter_label_key),
-    )
-    
-    assets = collector.collect_all(
-        max_tables=conf_args.get('max_tables'),
-        include_views=not conf_args.get('skip_views', False),
-    )
-    
-    if not assets:
-        raise ValueError("No assets found or collected.")
+    try:
+        # Get configuration from environment variables (primary source)
+        if not project_id:
+            raise ValueError("GCP_PROJECT_ID environment variable is required")
         
-    logger.info(f"Collected {len(assets)} assets.")
-    
-    # Assets are already plain dicts from the collector
-    # Push assets to XComs for downstream tasks
-    context['ti'].xcom_push(key='assets', value=assets)
+        filter_label_key = os.getenv('DISCOVERY_FILTER_LABEL_KEY', 'ignore-gmcp-discovery-scan')
+        
+        # Get default params from DAG definition, then override with dag_run.conf if provided
+        default_params = context.get('params', {})
+        dag_run_conf = context.get('dag_run', {}).conf if context.get('dag_run') else {}
+        
+        # Merge: DAG params as base, override with manual trigger config
+        conf_args = {**default_params.get('collector_args', {}), **dag_run_conf.get('collector_args', {})}
+        
+        logger.info("Starting metadata collection task.")
+        collector = BigQueryCollector(
+            project_id=conf_args.get('project', project_id),
+            target_projects=conf_args.get('projects', [project_id]),
+            exclude_datasets=conf_args.get('exclude_datasets', ['_staging', 'temp_', 'tmp_']),
+            use_dataplex_profiling=conf_args.get('use_dataplex', False),
+            dataplex_location=conf_args.get('dataplex_location', 'us-central1'),
+            use_gemini_descriptions=conf_args.get('use_gemini', True),
+            gemini_api_key=conf_args.get('gemini_api_key', os.getenv('GEMINI_API_KEY')),
+            max_workers=conf_args.get('workers', 2),
+            filter_label_key=conf_args.get('filter_label_key', filter_label_key),
+        )
+        
+        assets = collector.collect_all(
+            max_tables=conf_args.get('max_tables'),
+            include_views=not conf_args.get('skip_views', False),
+        )
+        
+        if not assets:
+            raise ValueError("No assets found or collected.")
+            
+        logger.info(f"Collected {len(assets)} assets.")
+        
+        # Track collected tables for lineage
+        for asset in assets:
+            table_full_name = f"{asset.get('project_id', project_id)}.{asset.get('dataset_id')}.{asset.get('table_id')}"
+            collected_tables.append(table_full_name)
+        
+        # Write assets to GCS scratch storage instead of XCom for better scalability
+        reports_bucket = os.getenv('GCS_REPORTS_BUCKET')
+        if not reports_bucket:
+            raise ValueError("GCS_REPORTS_BUCKET environment variable is required")
+        
+        run_id = context['run_id']
+        gcs_path = write_scratch_json(
+            data=assets,
+            bucket=reports_bucket,
+            run_id=run_id,
+            filename='assets'
+        )
+        
+        # Push only the GCS path to XCom (tiny string instead of large data)
+        context['ti'].xcom_push(key='assets_gcs_path', value=gcs_path)
+        logger.info(f"Assets written to GCS scratch: {gcs_path}")
+        
+        # Mark success
+        is_success = True
+        
+    finally:
+        # Record lineage regardless of success/failure
+        end_time = datetime.now(timezone.utc)
+        if project_id and gcs_path and collected_tables:
+            dag_id = context.get('dag', {}).dag_id if context.get('dag') else 'metadata_collection'
+            task_id = context.get('task', {}).task_id if context.get('task') else 'collect_metadata'
+            
+            # Build source-target pairs for lineage (BigQuery tables → GCS scratch file)
+            # Multiple source tables are collected into a single scratch file
+            source_targets = []
+            for table_name in collected_tables:
+                if '.' in table_name:
+                    source_fqn = format_bigquery_fqn(*table_name.split('.'))
+                    source_targets.append((source_fqn, gcs_path))
+            
+            record_lineage(
+                project_id=project_id,
+                location=lineage_location,
+                process_name=dag_id,
+                task_id=task_id,
+                source_targets=source_targets,
+                start_time=start_time,
+                end_time=end_time,
+                is_success=is_success,
+                source_system="bigquery",
+                source_type="metadata_collection",
+                extraction_method="scratch_storage"
+            )
 
 
 def export_to_bigquery_task(**context: Any) -> None:
@@ -100,7 +168,15 @@ def export_to_bigquery_task(**context: Any) -> None:
     args = context.get('dag_run', {}).conf if context.get('dag_run') else {}
     conf_args = args.get('bq_writer_args', {}) if args else {}
     
-    assets = context['ti'].xcom_pull(key='assets', task_ids='collect_metadata')
+    # Read assets from GCS scratch storage
+    assets_gcs_path = context['ti'].xcom_pull(key='assets_gcs_path', task_ids='collect_metadata')
+    
+    if not assets_gcs_path:
+        logger.warning("No assets GCS path found in XCom.")
+        return
+    
+    logger.info(f"Reading assets from GCS scratch: {assets_gcs_path}")
+    assets = read_scratch_json(assets_gcs_path)
     
     if not assets:
         logger.warning("No assets to export to BigQuery.")
@@ -203,8 +279,15 @@ def export_markdown_reports_task(**context: Any) -> None:
         # Allow manual override via dag_run.conf for testing/manual runs
         args = context.get('dag_run', {}).conf if context.get('dag_run') else {}
         
-        # Get assets from XCom
-        asset_dicts = context['ti'].xcom_pull(key='assets', task_ids='collect_metadata')
+        # Read assets from GCS scratch storage
+        assets_gcs_path = context['ti'].xcom_pull(key='assets_gcs_path', task_ids='collect_metadata')
+        
+        if not assets_gcs_path:
+            logger.warning("No assets GCS path found in XCom.")
+            return
+        
+        logger.info(f"Reading assets from GCS scratch: {assets_gcs_path}")
+        asset_dicts = read_scratch_json(assets_gcs_path)
         
         # Get run_timestamp from BigQuery export task (or generate if not available)
         run_timestamp = context['ti'].xcom_pull(key='run_timestamp', task_ids='export_to_bigquery')
@@ -291,3 +374,54 @@ def export_markdown_reports_task(**context: Any) -> None:
                 source_type="report_generation",
                 extraction_method="markdown_export"
             )
+
+
+def cleanup_scratch_files_task(**context: Any) -> None:
+    """
+    Airflow task to clean up old scratch files from GCS.
+    
+    Deletes scratch files older than the configured retention period to save storage costs.
+    This task runs at the end of the DAG with trigger_rule='all_done' so it executes
+    even if upstream tasks fail.
+    
+    Configuration is read from environment variables:
+    - GCS_REPORTS_BUCKET: Bucket containing scratch files
+    - SCRATCH_RETENTION_DAYS: Number of days to retain files (default: 7)
+    
+    Args:
+        **context: Airflow context with dag_run and task instance info
+    """
+    try:
+        # Get configuration from environment variables
+        reports_bucket = os.getenv('GCS_REPORTS_BUCKET')
+        retention_days = int(os.getenv('SCRATCH_RETENTION_DAYS', '7'))
+        
+        if not reports_bucket:
+            logger.warning(
+                "GCS_REPORTS_BUCKET not configured, skipping scratch file cleanup"
+            )
+            return
+        
+        logger.info(
+            f"Starting scratch file cleanup in gs://{reports_bucket}/airflow-scratch/"
+        )
+        logger.info(f"Retention period: {retention_days} days")
+        
+        # Clean up old files
+        files_deleted, files_failed = cleanup_old_scratch_files(
+            bucket=reports_bucket,
+            days_to_keep=retention_days
+        )
+        
+        logger.info(
+            f"Scratch file cleanup complete: {files_deleted} files deleted, "
+            f"{files_failed} files failed"
+        )
+        
+    except ValueError as e:
+        logger.error(f"Configuration error in cleanup task: {e}")
+        # Non-fatal: log error but don't fail the task
+        
+    except Exception as e:
+        logger.error(f"Error during scratch file cleanup: {e}")
+        # Non-fatal: cleanup failures shouldn't fail the DAG

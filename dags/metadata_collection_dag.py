@@ -15,6 +15,7 @@ from data_discovery_agent.orchestration.tasks import (
     export_to_bigquery_task,
     export_markdown_reports_task,
     import_to_vertex_ai_task,
+    cleanup_scratch_files_task,
 )
 
 with DAG(
@@ -29,8 +30,8 @@ with DAG(
             "dataplex_location": "us-central1",
             "use_gemini": True,  # Enable Gemini-generated descriptions
             "workers": 2,  # Parallel workers for collection
+            "max_tables": None,  # Set to None to collect all tables (or set a specific limit for testing)
             # Uncomment to override defaults:
-            # "max_tables": 10,  # Limit tables for testing
             # "skip_views": False,  # Include/exclude views
             # "exclude_datasets": ["_staging", "temp_", "tmp_"],
         }
@@ -56,6 +57,13 @@ with DAG(
         python_callable=import_to_vertex_ai_task,
     )
 
-    # DAG flow: collect metadata -> export to BigQuery -> generate markdown reports + import to Vertex AI
+    cleanup_scratch = PythonOperator(
+        task_id="cleanup_scratch_files",
+        python_callable=cleanup_scratch_files_task,
+        trigger_rule='all_done',  # Run even if upstream tasks fail
+    )
+
+    # DAG flow: collect metadata -> export to BigQuery -> generate markdown reports + import to Vertex AI -> cleanup scratch files
     # Markdown reports use the same run_timestamp as BigQuery for correlation
-    collect_metadata >> export_to_bigquery >> [export_markdown_reports, import_to_vertex_ai]
+    # Cleanup runs at the end to remove old scratch files, regardless of upstream task status
+    collect_metadata >> export_to_bigquery >> [export_markdown_reports, import_to_vertex_ai] >> cleanup_scratch

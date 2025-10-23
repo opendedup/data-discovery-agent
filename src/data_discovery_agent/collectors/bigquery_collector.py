@@ -464,6 +464,14 @@ class BigQueryCollector:
                     project_id, dataset_id, table_id, table.schema
                 )
             
+            # Merge sample values into schema fields
+            if sample_values and table_metadata.get("schema", {}).get("fields"):
+                for field in table_metadata["schema"]["fields"]:
+                    field_name = field["name"]
+                    if field_name in sample_values:
+                        field["sample_values"] = sample_values[field_name]
+                        logger.debug(f"Added {len(sample_values[field_name])} sample values to field {field_name}")
+            
             # Build comprehensive quality_info
             quality_info = {}
             if quality_stats or column_profiles or sample_values:

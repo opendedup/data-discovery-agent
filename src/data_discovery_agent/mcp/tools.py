@@ -14,6 +14,7 @@ QUERY_DATA_ASSETS_TOOL = "query_data_assets"
 GET_ASSET_DETAILS_TOOL = "get_asset_details"
 LIST_DATASETS_TOOL = "list_datasets"
 GET_DATASETS_FOR_QUERY_GENERATION_TOOL = "get_datasets_for_query_generation"
+DISCOVER_DATASETS_FOR_PRP_TOOL = "discover_datasets_for_prp"
 
 
 def get_available_tools() -> List[Tool]:
@@ -282,6 +283,39 @@ def get_available_tools() -> List[Tool]:
                 "required": ["query"]
             }
         ),
+        
+        Tool(
+            name=DISCOVER_DATASETS_FOR_PRP_TOOL,
+            description=(
+                "Analyze a Product Requirement Prompt (PRP) and discover relevant BigQuery datasets "
+                "that could fulfill the data requirements. Uses AI to intelligently parse the PRP, "
+                "generate targeted search queries, execute searches, evaluate dataset relevance, "
+                "and return ranked results in structured JSON format. This tool is optimized for "
+                "data product planning and requirement analysis workflows."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "prp_text": {
+                        "type": "string",
+                        "description": (
+                            "Product Requirement Prompt (PRP) as markdown text. Should include "
+                            "sections describing the product objective, key metrics, dimensions, "
+                            "and data requirements. The AI will parse this to understand what "
+                            "data is needed and search for matching datasets."
+                        )
+                    },
+                    "max_results": {
+                        "type": "integer",
+                        "description": "Maximum number of datasets to return (default: 10)",
+                        "minimum": 1,
+                        "maximum": 50,
+                        "default": 10
+                    }
+                },
+                "required": ["prp_text"]
+            }
+        ),
     ]
 
 
@@ -389,6 +423,20 @@ def validate_query_params(
         sort_order = arguments.get("sort_order", "desc")
         if sort_order not in ["asc", "desc"]:
             raise ValueError("'sort_order' must be 'asc' or 'desc'")
+    
+    elif tool_name == DISCOVER_DATASETS_FOR_PRP_TOOL:
+        # Validate prp_text
+        if not arguments.get("prp_text"):
+            raise ValueError("'prp_text' parameter is required")
+        
+        prp_text = arguments.get("prp_text")
+        if not isinstance(prp_text, str) or len(prp_text.strip()) < 10:
+            raise ValueError("'prp_text' must be a non-empty string with at least 10 characters")
+        
+        # Validate max_results
+        max_results = arguments.get("max_results", 10)
+        if not isinstance(max_results, int) or max_results < 1 or max_results > 50:
+            raise ValueError("'max_results' must be between 1 and 50")
     
     else:
         raise ValueError(f"Unknown tool: {tool_name}")

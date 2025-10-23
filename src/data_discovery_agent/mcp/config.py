@@ -102,6 +102,22 @@ class MCPConfig(BaseModel):
         description="Logging level (DEBUG, INFO, WARNING, ERROR)"
     )
     
+    # Gemini Configuration for PRP Discovery
+    gemini_api_key: str = Field(
+        default_factory=lambda: os.getenv("GEMINI_API_KEY", ""),
+        description="Gemini API key for PRP analysis and dataset evaluation"
+    )
+    
+    prp_max_queries: int = Field(
+        default_factory=lambda: int(os.getenv("PRP_MAX_QUERIES", "10")),
+        description="Maximum number of search queries to generate from PRP"
+    )
+    
+    prp_min_relevance_score: float = Field(
+        default_factory=lambda: float(os.getenv("PRP_MIN_RELEVANCE_SCORE", "60.0")),
+        description="Minimum relevance score for dataset inclusion (0-100)"
+    )
+    
     def validate_required_fields(self) -> None:
         """
         Validate that required configuration fields are set.

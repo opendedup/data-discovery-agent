@@ -62,7 +62,7 @@ class InspectResponse(BaseModel):
     asset: AssetInfo
     
     # Schema
-    schema: Optional[List[ColumnInfo]] = None
+    table_schema: Optional[List[ColumnInfo]] = None
     
     # Sample data
     sample_rows: Optional[List[Dict[str, Any]]] = None

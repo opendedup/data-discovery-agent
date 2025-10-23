@@ -216,3 +216,285 @@ class TestBigQueryWriter:
                 call_args = mock_record_lineage.call_args
                 assert call_args is not None
 
+
+@pytest.mark.unit
+@pytest.mark.writers
+class TestSchemaFlattening:
+    """Tests for nested schema flattening functionality."""
+
+    @patch("data_discovery_agent.writers.bigquery_writer.bigquery.Client")
+    def test_flatten_simple_nested_record(
+        self, mock_bq_client: Mock, mock_env: dict[str, str]
+    ) -> None:
+        """Test flattening a simple nested RECORD."""
+        writer = BigQueryWriter(project_id="test-project")
+        
+        schema = [
+            {
+                "name": "address",
+                "type": "RECORD",
+                "mode": "NULLABLE",
+                "description": "Address info",
+                "fields": [
+                    {
+                        "name": "street",
+                        "type": "STRING",
+                        "mode": "NULLABLE",
+                        "description": "Street address",
+                    },
+                    {
+                        "name": "city",
+                        "type": "STRING",
+                        "mode": "NULLABLE",
+                        "description": "City name",
+                    },
+                ],
+            }
+        ]
+        
+        flattened = writer._flatten_schema_fields(schema)
+        
+        assert len(flattened) == 2
+        assert flattened[0]["name"] == "address.street"
+        assert flattened[0]["type"] == "STRING"
+        assert flattened[0]["description"] == "Street address"
+        assert flattened[1]["name"] == "address.city"
+        assert flattened[1]["type"] == "STRING"
+
+    @patch("data_discovery_agent.writers.bigquery_writer.bigquery.Client")
+    def test_flatten_repeated_record(
+        self, mock_bq_client: Mock, mock_env: dict[str, str]
+    ) -> None:
+        """Test flattening REPEATED RECORD (array)."""
+        writer = BigQueryWriter(project_id="test-project")
+        
+        schema = [
+            {
+                "name": "orders",
+                "type": "RECORD",
+                "mode": "REPEATED",
+                "description": "Orders",
+                "fields": [
+                    {
+                        "name": "order_id",
+                        "type": "STRING",
+                        "mode": "NULLABLE",
+                        "description": "Order ID",
+                    },
+                    {
+                        "name": "total",
+                        "type": "FLOAT",
+                        "mode": "NULLABLE",
+                        "description": "Total",
+                    },
+                ],
+            }
+        ]
+        
+        flattened = writer._flatten_schema_fields(schema)
+        
+        assert len(flattened) == 2
+        assert flattened[0]["name"] == "orders[].order_id"
+        assert flattened[0]["mode"] == "REPEATED"
+        assert flattened[1]["name"] == "orders[].total"
+        assert flattened[1]["mode"] == "REPEATED"
+
+    @patch("data_discovery_agent.writers.bigquery_writer.bigquery.Client")
+    def test_flatten_deeply_nested_record(
+        self, mock_bq_client: Mock, mock_env: dict[str, str]
+    ) -> None:
+        """Test flattening deeply nested RECORD structures."""
+        writer = BigQueryWriter(project_id="test-project")
+        
+        schema = [
+            {
+                "name": "user",
+                "type": "RECORD",
+                "mode": "NULLABLE",
+                "fields": [
+                    {
+                        "name": "profile",
+                        "type": "RECORD",
+                        "mode": "NULLABLE",
+                        "fields": [
+                            {
+                                "name": "address",
+                                "type": "RECORD",
+                                "mode": "NULLABLE",
+                                "fields": [
+                                    {
+                                        "name": "city",
+                                        "type": "STRING",
+                                        "mode": "NULLABLE",
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                ],
+            }
+        ]
+        
+        flattened = writer._flatten_schema_fields(schema)
+        
+        assert len(flattened) == 1
+        assert flattened[0]["name"] == "user.profile.address.city"
+        assert flattened[0]["type"] == "STRING"
+
+    @patch("data_discovery_agent.writers.bigquery_writer.bigquery.Client")
+    def test_flatten_nested_arrays(
+        self, mock_bq_client: Mock, mock_env: dict[str, str]
+    ) -> None:
+        """Test flattening nested arrays (REPEATED within REPEATED)."""
+        writer = BigQueryWriter(project_id="test-project")
+        
+        schema = [
+            {
+                "name": "orders",
+                "type": "RECORD",
+                "mode": "REPEATED",
+                "fields": [
+                    {
+                        "name": "items",
+                        "type": "RECORD",
+                        "mode": "REPEATED",
+                        "fields": [
+                            {
+                                "name": "product_id",
+                                "type": "STRING",
+                                "mode": "NULLABLE",
+                            }
+                        ],
+                    }
+                ],
+            }
+        ]
+        
+        flattened = writer._flatten_schema_fields(schema)
+        
+        assert len(flattened) == 1
+        assert flattened[0]["name"] == "orders[].items[].product_id"
+        assert flattened[0]["mode"] == "REPEATED"
+
+    @patch("data_discovery_agent.writers.bigquery_writer.bigquery.Client")
+    def test_flatten_mixed_fields(
+        self, mock_bq_client: Mock, mock_env: dict[str, str]
+    ) -> None:
+        """Test flattening schema with both flat and nested fields."""
+        writer = BigQueryWriter(project_id="test-project")
+        
+        schema = [
+            {
+                "name": "id",
+                "type": "STRING",
+                "mode": "REQUIRED",
+                "description": "ID",
+            },
+            {
+                "name": "metadata",
+                "type": "RECORD",
+                "mode": "NULLABLE",
+                "fields": [
+                    {
+                        "name": "created_at",
+                        "type": "TIMESTAMP",
+                        "mode": "NULLABLE",
+                    }
+                ],
+            },
+        ]
+        
+        flattened = writer._flatten_schema_fields(schema)
+        
+        assert len(flattened) == 2
+        assert flattened[0]["name"] == "id"
+        assert flattened[1]["name"] == "metadata.created_at"
+
+    @patch("data_discovery_agent.writers.bigquery_writer.bigquery.Client")
+    def test_flatten_preserves_leaf_types(
+        self, mock_bq_client: Mock, mock_env: dict[str, str]
+    ) -> None:
+        """Test that flattening preserves leaf field types correctly."""
+        writer = BigQueryWriter(project_id="test-project")
+        
+        schema = [
+            {
+                "name": "data",
+                "type": "RECORD",
+                "mode": "NULLABLE",
+                "fields": [
+                    {"name": "str_field", "type": "STRING", "mode": "NULLABLE"},
+                    {"name": "int_field", "type": "INTEGER", "mode": "NULLABLE"},
+                    {"name": "float_field", "type": "FLOAT", "mode": "NULLABLE"},
+                    {"name": "bool_field", "type": "BOOLEAN", "mode": "NULLABLE"},
+                    {"name": "timestamp_field", "type": "TIMESTAMP", "mode": "NULLABLE"},
+                ],
+            }
+        ]
+        
+        flattened = writer._flatten_schema_fields(schema)
+        
+        assert len(flattened) == 5
+        assert flattened[0]["type"] == "STRING"
+        assert flattened[1]["type"] == "INTEGER"
+        assert flattened[2]["type"] == "FLOAT"
+        assert flattened[3]["type"] == "BOOLEAN"
+        assert flattened[4]["type"] == "TIMESTAMP"
+
+    @patch("data_discovery_agent.writers.bigquery_writer.bigquery.Client")
+    def test_write_nested_schema_asset(
+        self, mock_bq_client: Mock, mock_env: dict[str, str]
+    ) -> None:
+        """Test writing asset with nested schema flattens correctly."""
+        from tests.helpers.fixtures import create_nested_record_asset
+        
+        mock_client_instance = Mock()
+        mock_bq_client.return_value = mock_client_instance
+        mock_client_instance.insert_rows_json.return_value = []
+        
+        writer = BigQueryWriter(project_id="test-project")
+        assets = [create_nested_record_asset()]
+        
+        writer.write_to_bigquery(assets)
+        
+        # Verify schema was flattened
+        call_args = mock_client_instance.insert_rows_json.call_args
+        if call_args:
+            rows = call_args[0][1]
+            schema = rows[0]["schema"]
+            
+            # Should have flattened nested fields
+            assert any("address.street" in field["name"] for field in schema)
+            assert any("address.city" in field["name"] for field in schema)
+            assert any("address.geo.lat" in field["name"] for field in schema)
+            
+            # Should NOT have nested 'fields' property
+            for field in schema:
+                assert "fields" not in field
+
+    @patch("data_discovery_agent.writers.bigquery_writer.bigquery.Client")
+    def test_write_repeated_schema_asset(
+        self, mock_bq_client: Mock, mock_env: dict[str, str]
+    ) -> None:
+        """Test writing asset with REPEATED RECORD schema."""
+        from tests.helpers.fixtures import create_repeated_record_asset
+        
+        mock_client_instance = Mock()
+        mock_bq_client.return_value = mock_client_instance
+        mock_client_instance.insert_rows_json.return_value = []
+        
+        writer = BigQueryWriter(project_id="test-project")
+        assets = [create_repeated_record_asset()]
+        
+        writer.write_to_bigquery(assets)
+        
+        # Verify array notation
+        call_args = mock_client_instance.insert_rows_json.call_args
+        if call_args:
+            rows = call_args[0][1]
+            schema = rows[0]["schema"]
+            
+            # Should have array notation
+            assert any("orders[].order_id" in field["name"] for field in schema)
+            assert any("orders[].items[].product_id" in field["name"] for field in schema)
+

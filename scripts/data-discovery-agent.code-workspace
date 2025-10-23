@@ -8,6 +8,9 @@
 		},
 		{
 			"path": "../../data-discovery-infrastructure-gcp"
+		},
+		{
+			"path": "../../data-planning-agent"
 		}
 	],
 	"settings": {}

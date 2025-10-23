@@ -5,13 +5,16 @@ Implements the business logic for handling MCP tool calls.
 Queries Vertex AI Search and retrieves Markdown documentation from GCS.
 """
 
+import asyncio
 import json
 import logging
+import os
 from typing import Any, Dict, List, Optional
-from google.cloud import storage
+from google.cloud import bigquery, storage
 from datetime import datetime, timezone
 
 from ..clients.vertex_search_client import VertexSearchClient
+from ..clients.prp_client import PRPDiscoveryClient
 from ..models.search_models import SearchRequest, SortOrder
 from ..schemas.asset_schema import (
     DiscoveredAssetDict,
@@ -95,7 +98,6 @@ class MCPHandlers:
             logger.info(f"Executing search: query='{search_request.query}'")
             
             # Execute search (run in thread pool to avoid blocking async event loop)
-            import asyncio
             logger.info("About to get event loop...")
             loop = asyncio.get_running_loop()  # Use get_running_loop() for async context
             logger.info("Got event loop, submitting search to thread pool...")
@@ -178,8 +180,7 @@ class MCPHandlers:
                 )
                 
                 # Run search in thread pool to avoid blocking event loop
-                import asyncio
-                loop = asyncio.get_event_loop()
+                loop = asyncio.get_running_loop()
                 search_response = await loop.run_in_executor(
                     None,
                     lambda: self.vertex_client.search(search_request),
@@ -253,7 +254,6 @@ class MCPHandlers:
             )
             
             # Execute search in thread pool
-            import asyncio
             loop = asyncio.get_running_loop()
             
             search_response = await loop.run_in_executor(
@@ -329,8 +329,7 @@ class MCPHandlers:
             )
             
             # Run search in thread pool to avoid blocking event loop
-            import asyncio
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             search_response = await loop.run_in_executor(
                 None,
                 lambda: self.vertex_client.search(search_request),
@@ -360,6 +359,69 @@ class MCPHandlers:
         except Exception as e:
             logger.error(f"Error handling list_datasets: {e}", exc_info=True)
             return format_error_response(str(e), "list_datasets")
+    
+    async def handle_discover_datasets_for_prp(
+        self,
+        arguments: Dict[str, Any],
+    ) -> List[Any]:
+        """
+        Handle discover_datasets_for_prp tool call.
+        
+        Analyzes a Product Requirement Prompt (PRP) and discovers relevant datasets
+        using AI-powered query generation and relevance scoring, then enriches results
+        with BigQuery data.
+        
+        Args:
+            arguments: Tool arguments including:
+                - prp_text: Product Requirement Prompt as markdown text
+                - max_results: Maximum number of datasets to return (default: 10)
+            
+        Returns:
+            List of TextContent objects containing JSON response
+        """
+        try:
+            prp_text = arguments["prp_text"]
+            max_results = arguments.get("max_results", 10)
+            
+            logger.info(
+                f"Starting PRP discovery (prp_length={len(prp_text)} chars, "
+                f"max_results={max_results})"
+            )
+            
+            # Initialize PRP discovery client
+            prp_client = PRPDiscoveryClient(
+                vertex_client=self.vertex_client,
+                gemini_api_key=self.config.gemini_api_key,
+                max_queries=self.config.prp_max_queries,
+                min_relevance_score=self.config.prp_min_relevance_score,
+            )
+            
+            # Discover datasets
+            result = await prp_client.discover_datasets_for_prp(
+                prp_text=prp_text,
+                max_results=max_results,
+            )
+            
+            # Enrich datasets with BigQuery data
+            if result.get('datasets'):
+                result['datasets'] = await self._enrich_from_bigquery(result['datasets'])
+            
+            # Log completion with metadata summary
+            metadata = result.get("discovery_metadata", {})
+            summary = metadata.get("summary", {})
+            logger.info(
+                f"PRP discovery completed: found {result['total_count']} datasets, "
+                f"executed {summary.get('total_queries_generated', 0)} queries "
+                f"in {summary.get('total_execution_time_ms', 0):.0f}ms"
+            )
+            
+            # Format as JSON response
+            response_json = json.dumps(result, indent=2)
+            return format_tool_response(response_json)
+            
+        except Exception as e:
+            logger.error(f"Error handling discover_datasets_for_prp: {e}", exc_info=True)
+            return format_error_response(str(e), "discover_datasets_for_prp")
     
     async def _format_search_results(
         self,
@@ -566,13 +628,13 @@ class MCPHandlers:
         Format search results for Query Generation Agent.
         
         Transforms search results into the BigQuery writer schema format,
-        which is the canonical format for discovered assets.
+        then enriches with data from BigQuery discovered_assets_latest view.
         
         Args:
             search_response: SearchResponse object
             
         Returns:
-            List of DiscoveredAssetDict objects matching BigQuery schema
+            List of DiscoveredAssetDict objects with full data
         """
         datasets = []
         run_timestamp = datetime.now(timezone.utc).isoformat()
@@ -667,7 +729,187 @@ class MCPHandlers:
             
             datasets.append(dataset_obj)
         
+        # Enrich with BigQuery data
+        datasets = await self._enrich_from_bigquery(datasets)
+        
         return datasets
+    
+    async def _enrich_from_bigquery(
+        self,
+        datasets: List[DiscoveredAssetDict]
+    ) -> List[DiscoveredAssetDict]:
+        """
+        Enrich dataset results with data from BigQuery discovered_assets_latest view.
+        
+        Args:
+            datasets: List of datasets from Vertex AI Search
+            
+        Returns:
+            Enriched datasets with schema, lineage, analytical_insights, column_profiles
+        """
+        if not datasets:
+            return datasets
+        
+        try:
+            # Get BigQuery configuration
+            bq_project = os.getenv('GCP_PROJECT_ID')
+            bq_dataset = os.getenv('BQ_DATASET', 'data_discovery')
+            bq_table = os.getenv('BQ_TABLE', 'discovered_assets')
+            view_name = f"{bq_table}_latest"
+            
+            if not bq_project:
+                logger.warning("GCP_PROJECT_ID not set, skipping BigQuery enrichment")
+                return datasets
+            
+            # Build list of fully qualified table names
+            table_fqns = [
+                f"{ds['project_id']}.{ds['dataset_id']}.{ds['table_id']}"
+                for ds in datasets
+                if ds.get('project_id') and ds.get('dataset_id') and ds.get('table_id')
+            ]
+            
+            if not table_fqns:
+                logger.info("No valid table FQNs to enrich, skipping BigQuery enrichment")
+                return datasets
+            
+            logger.info(f"Enriching {len(table_fqns)} datasets from BigQuery view: {bq_project}.{bq_dataset}.{view_name}")
+            
+            # Format array for SQL UNNEST
+            table_array = ",\n            ".join([f"'{fqn}'" for fqn in table_fqns])
+            
+            query = f"""
+            SELECT *
+            FROM `{bq_project}.{bq_dataset}.{view_name}`
+            WHERE CONCAT(project_id, '.', dataset_id, '.', table_id) IN UNNEST([
+                {table_array}
+            ])
+            """
+            
+            logger.debug(f"Executing BigQuery enrichment query: {query}")
+            
+            # Execute query in thread pool to avoid blocking async event loop
+            loop = asyncio.get_running_loop()
+            
+            def _execute_bq_query():
+                bq_client = bigquery.Client(project=bq_project)
+                query_job = bq_client.query(query)
+                return query_job.result()
+            
+            results = await loop.run_in_executor(None, _execute_bq_query)
+            
+            # Build lookup map
+            bq_data_map = {}
+            for row in results:
+                key = (row.project_id, row.dataset_id, row.table_id)
+                bq_data_map[key] = dict(row)
+            
+            logger.info(f"Found {len(bq_data_map)} matching rows in BigQuery view")
+            
+            # Enrich datasets with BigQuery data
+            enriched = []
+            for ds in datasets:
+                key = (ds.get('project_id'), ds.get('dataset_id'), ds.get('table_id'))
+                
+                if key in bq_data_map:
+                    bq_row = bq_data_map[key]
+                    
+                    # Merge arrays from BigQuery (only if currently empty)
+                    if not ds.get('schema'):
+                        ds['schema'] = bq_row.get('schema', [])
+                        logger.debug(f"Set schema for {key[0]}.{key[1]}.{key[2]}: {len(ds.get('schema', []))} fields")
+                    
+                    if not ds.get('analytical_insights'):
+                        ds['analytical_insights'] = bq_row.get('analytical_insights', [])
+                    
+                    if not ds.get('lineage'):
+                        ds['lineage'] = bq_row.get('lineage', [])
+                    
+                    if not ds.get('column_profiles'):
+                        ds['column_profiles'] = bq_row.get('column_profiles', [])
+                    
+                    if not ds.get('key_metrics'):
+                        ds['key_metrics'] = bq_row.get('key_metrics', [])
+                    
+                    if not ds.get('labels'):
+                        ds['labels'] = bq_row.get('labels', [])
+                    
+                    logger.info(
+                        f"Enriched {key[0]}.{key[1]}.{key[2]} from BigQuery: "
+                        f"schema={len(ds.get('schema', []))} fields, "
+                        f"insights={len(ds.get('analytical_insights', []))}, "
+                        f"lineage={len(ds.get('lineage', []))}, "
+                        f"profiles={len(ds.get('column_profiles', []))}"
+                    )
+                else:
+                    logger.warning(f"No BigQuery data found for {key[0]}.{key[1]}.{key[2]}")
+                
+                # If schema is still empty, try fetching directly from BigQuery API
+                if not ds.get('schema') or len(ds.get('schema', [])) == 0:
+                    logger.info(f"Schema still empty for {key[0]}.{key[1]}.{key[2]}, fetching directly from BigQuery API")
+                    direct_schema = await self._fetch_schema_from_bigquery(
+                        bq_client=bq_client,
+                        project_id=key[0],
+                        dataset_id=key[1],
+                        table_id=key[2]
+                    )
+                    if direct_schema:
+                        ds['schema'] = direct_schema
+                        logger.info(f"Fetched {len(direct_schema)} schema fields directly from BigQuery API")
+                
+                enriched.append(ds)
+            
+            logger.info(f"Successfully enriched {len(enriched)} datasets from BigQuery")
+            return enriched
+            
+        except Exception as e:
+            logger.warning(f"Failed to enrich from BigQuery (non-fatal): {e}", exc_info=True)
+            return datasets  # Return original data on error
+    
+    async def _fetch_schema_from_bigquery(
+        self,
+        bq_client: bigquery.Client,
+        project_id: str,
+        dataset_id: str,
+        table_id: str,
+    ) -> List[SchemaFieldDict]:
+        """
+        Fetch schema directly from BigQuery API.
+        
+        Args:
+            bq_client: BigQuery client
+            project_id: GCP project ID
+            dataset_id: BigQuery dataset ID
+            table_id: BigQuery table ID
+            
+        Returns:
+            List of SchemaFieldDict objects
+        """
+        try:
+            # Run in thread pool to avoid blocking event loop
+            loop = asyncio.get_running_loop()
+            
+            def _fetch_table():
+                table_ref = f"{project_id}.{dataset_id}.{table_id}"
+                return bq_client.get_table(table_ref)
+            
+            table = await loop.run_in_executor(None, _fetch_table)
+            
+            # Convert BigQuery schema to SchemaFieldDict format
+            schema_fields: List[SchemaFieldDict] = []
+            for field in table.schema:
+                schema_fields.append(SchemaFieldDict(
+                    name=field.name,
+                    type=field.field_type,
+                    mode=field.mode if field.mode != "NULLABLE" else None,
+                    description=field.description or "",
+                    sample_values=None
+                ))
+            
+            return schema_fields
+            
+        except Exception as e:
+            logger.warning(f"Failed to fetch schema from BigQuery API for {project_id}.{dataset_id}.{table_id}: {e}")
+            return []
     
     def _extract_key_metrics(self, metadata: Any) -> List[Dict[str, str]]:
         """
@@ -841,14 +1083,23 @@ class MCPHandlers:
         """
         try:
             blob_path = f"{dataset_id}/{table_id}.md"
-            blob = self.reports_bucket.blob(blob_path)
             
-            if not blob.exists():
-                logger.debug(f"Markdown not found in GCS: {blob_path}")
-                return None
+            # Run GCS operations in thread pool to avoid blocking async event loop
+            loop = asyncio.get_running_loop()
             
-            content = blob.download_as_text(encoding='utf-8')
-            logger.debug(f"Fetched markdown from GCS: {blob_path} ({len(content)} chars)")
+            def _fetch_blob():
+                blob = self.reports_bucket.blob(blob_path)
+                
+                if not blob.exists():
+                    logger.debug(f"Markdown not found in GCS: {blob_path}")
+                    return None
+                
+                return blob.download_as_text(encoding='utf-8')
+            
+            content = await loop.run_in_executor(None, _fetch_blob)
+            
+            if content:
+                logger.debug(f"Fetched markdown from GCS: {blob_path} ({len(content)} chars)")
             
             return content
             
@@ -881,8 +1132,7 @@ class MCPHandlers:
             bucket_name, blob_path = parts
             
             # Run GCS operations in thread pool to avoid blocking event loop
-            import asyncio
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             
             def fetch_blob_content():
                 bucket = self.storage_client.bucket(bucket_name)
