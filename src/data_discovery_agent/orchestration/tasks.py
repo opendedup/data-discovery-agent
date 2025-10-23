@@ -237,7 +237,7 @@ def import_to_vertex_ai_task(**context: Any) -> None:
     operation_name = client.import_documents_from_bigquery(
         dataset_id=conf_args.get('bq_dataset', bq_dataset),
         table_id=conf_args.get('bq_table', bq_table),
-        reconciliation_mode="INCREMENTAL",
+        reconciliation_mode="FULL",
     )
     logger.info(f"Vertex AI Search import started. Operation: {operation_name}")
 

@@ -493,7 +493,7 @@ def main():
                     operation_name = client.import_documents_from_bigquery(
                         dataset_id=args.bq_dataset,
                         table_id=args.bq_table,
-                        reconciliation_mode="INCREMENTAL",
+                        reconciliation_mode="FULL",
                     )
                     print(f"✓ Import started. Operation: {operation_name}")
                     print("  Check the status in the Google Cloud Console.")
