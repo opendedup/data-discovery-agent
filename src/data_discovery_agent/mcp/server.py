@@ -25,6 +25,7 @@ from .tools import (
     LIST_DATASETS_TOOL,
     GET_DATASETS_FOR_QUERY_GENERATION_TOOL,
     DISCOVER_DATASETS_FOR_PRP_TOOL,
+    DISCOVER_FROM_PRP_TOOL,
 )
 from .handlers import MCPHandlers
 
@@ -132,6 +133,9 @@ def create_mcp_server(config: MCPConfig | None = None) -> Server:
             elif name == DISCOVER_DATASETS_FOR_PRP_TOOL:
                 return await handlers.handle_discover_datasets_for_prp(arguments)
             
+            elif name == DISCOVER_FROM_PRP_TOOL:
+                return await handlers.handle_discover_from_prp(arguments)
+            
             else:
                 error_msg = f"Unknown tool: {name}"
                 logger.error(error_msg)
@@ -200,6 +204,9 @@ def run_server() -> None:
     """
     # Load config to determine transport mode
     config = load_config()
+    
+    # Apply logging level from configuration
+    logging.getLogger().setLevel(config.log_level)
     
     logger.info(f"Starting MCP server: {config.mcp_server_name} v{config.mcp_server_version}")
     logger.info(f"Transport: {config.mcp_transport}")

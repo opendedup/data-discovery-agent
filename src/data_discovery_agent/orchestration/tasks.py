@@ -234,9 +234,20 @@ def import_to_vertex_ai_task(**context: Any) -> None:
         datastore_id=conf_args.get('datastore', datastore_id),
     )
     
+    # Purge existing documents before import (optional - skip if no permission)
+    try:
+        logger.info("Purging existing documents from datastore...")
+        purge_operation = client.purge_documents(force=True)
+        logger.info(f"Purge operation started: {purge_operation}")
+    except Exception as e:
+        logger.warning(f"Failed to purge documents (skipping): {e}")
+        logger.info("Continuing with import without purge. Note: This may result in duplicate documents if using auto-generated IDs.")
+    
+    # Import from BigQuery view
+    view_name = f"{bq_table}_latest"
     operation_name = client.import_documents_from_bigquery(
         dataset_id=conf_args.get('bq_dataset', bq_dataset),
-        table_id=conf_args.get('bq_table', bq_table),
+        table_id=view_name,
         reconciliation_mode="FULL",
     )
     logger.info(f"Vertex AI Search import started. Operation: {operation_name}")

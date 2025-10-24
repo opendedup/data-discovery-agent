@@ -16,5 +16,7 @@
 			"path": "../../data-graphql-agent"
 		}
 	],
-	"settings": {}
+	"settings": {
+		"terminal.integrated.scrollback": 10000
+	}
 }

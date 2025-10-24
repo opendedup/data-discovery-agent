@@ -91,6 +91,14 @@ class GeminiDescriber:
         for attempt in range(self.max_retries + 1):
             try:
                 response = self.model.generate_content(prompt)
+                
+                # Log the response for debugging
+                logger.debug("=" * 80)
+                logger.debug(f"LLM RESPONSE ({context}):")
+                logger.debug("-" * 80)
+                logger.debug(response.text)
+                logger.debug("=" * 80)
+                
                 return response
                 
             except Exception as e:
@@ -175,6 +183,12 @@ class GeminiDescriber:
                 row_count=row_count,
                 size_bytes=size_bytes,
             )
+            
+            logger.debug("=" * 80)
+            logger.debug(f"LLM CONTEXT - TABLE DESCRIPTION GENERATION ({table_name}):")
+            logger.debug("-" * 80)
+            logger.debug(prompt)
+            logger.debug("=" * 80)
             
             # Generate description with retry logic
             response = self._call_with_retry(prompt, table_name)
@@ -321,6 +335,12 @@ class GeminiDescriber:
                 row_count=row_count,
                 num_insights=num_insights,
             )
+            
+            logger.debug("=" * 80)
+            logger.debug(f"LLM CONTEXT - TABLE INSIGHTS GENERATION ({table_name}):")
+            logger.debug("-" * 80)
+            logger.debug(prompt)
+            logger.debug("=" * 80)
             
             # Generate insights with retry logic
             response = self._call_with_retry(prompt, f"{table_name} (insights)")

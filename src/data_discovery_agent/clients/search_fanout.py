@@ -52,6 +52,12 @@ Examples:
 
 Generate ONLY the queries as a JSON array, nothing else. No markdown, no explanation:"""
         
+        logger.debug("=" * 80)
+        logger.debug(f"LLM CONTEXT - SEARCH FANOUT GENERATION ({original_query}):")
+        logger.debug("-" * 80)
+        logger.debug(prompt)
+        logger.debug("=" * 80)
+        
         try:
             # Import here to avoid circular dependency
             import google.generativeai as genai
@@ -67,6 +73,12 @@ Generate ONLY the queries as a JSON array, nothing else. No markdown, no explana
             
             # Extract text and parse JSON
             response_text = response.text.strip()
+            
+            logger.debug("=" * 80)
+            logger.debug(f"LLM RESPONSE - SEARCH FANOUT GENERATION ({original_query}):")
+            logger.debug("-" * 80)
+            logger.debug(response_text)
+            logger.debug("=" * 80)
             
             # Remove markdown code blocks if present
             if response_text.startswith("```"):

@@ -294,6 +294,7 @@ def create_http_app() -> FastAPI:
                     LIST_DATASETS_TOOL,
                     GET_DATASETS_FOR_QUERY_GENERATION_TOOL,
                     DISCOVER_DATASETS_FOR_PRP_TOOL,
+                    DISCOVER_FROM_PRP_TOOL,
                     validate_query_params,
                 )
                 
@@ -321,6 +322,8 @@ def create_http_app() -> FastAPI:
                     result = await handlers_instance.handle_get_datasets_for_query_generation(arguments)
                 elif tool_name == DISCOVER_DATASETS_FOR_PRP_TOOL:
                     result = await handlers_instance.handle_discover_datasets_for_prp(arguments)
+                elif tool_name == DISCOVER_FROM_PRP_TOOL:
+                    result = await handlers_instance.handle_discover_from_prp(arguments)
                 else:
                     return {
                         "jsonrpc": "2.0",
@@ -442,6 +445,7 @@ def create_http_app() -> FastAPI:
                 LIST_DATASETS_TOOL,
                 GET_DATASETS_FOR_QUERY_GENERATION_TOOL,
                 DISCOVER_DATASETS_FOR_PRP_TOOL,
+                DISCOVER_FROM_PRP_TOOL,
                 validate_query_params,
             )
             
@@ -459,6 +463,8 @@ def create_http_app() -> FastAPI:
                 result = await handlers_instance.handle_get_datasets_for_query_generation(arguments)
             elif tool_name == DISCOVER_DATASETS_FOR_PRP_TOOL:
                 result = await handlers_instance.handle_discover_datasets_for_prp(arguments)
+            elif tool_name == DISCOVER_FROM_PRP_TOOL:
+                result = await handlers_instance.handle_discover_from_prp(arguments)
             else:
                 raise HTTPException(status_code=404, detail=f"Unknown tool: {tool_name}")
             

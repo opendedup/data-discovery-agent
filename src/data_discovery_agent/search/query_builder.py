@@ -34,7 +34,6 @@ class SearchQueryBuilder:
             "has_pii": r"(?:has )?pii|contains pii|pii data",
             "has_phi": r"(?:has )?phi|contains phi|phi data",
             "environment": r"(?:environment|env)[\s:=]+['\"]?(prod|staging|dev)['\"]?",
-            "team": r"(?:team|owner)[\s:=]+['\"]?([a-zA-Z0-9_-]+)['\"]?",
         }
     
     def build_query(
@@ -126,11 +125,6 @@ class SearchQueryBuilder:
             extracted_filters["environment"] = match.group(1).lower()
             remaining_query = remaining_query.replace(match.group(0), "")
         
-        # Extract team
-        if match := re.search(self.filter_patterns["team"], user_query, re.IGNORECASE):
-            extracted_filters["team"] = match.group(1)
-            remaining_query = remaining_query.replace(match.group(0), "")
-        
         # Extract size/cost filters
         remaining_query, size_filter = self._extract_numeric_filter(
             remaining_query, ["size", "bytes", "GB"], "size_bytes"
@@ -211,7 +205,7 @@ class SearchQueryBuilder:
         filter_parts = []
         
         # String equality filters
-        for field in ["project_id", "dataset_id", "table_id", "team", "environment"]:
+        for field in ["project_id", "dataset_id", "table_id", "environment"]:
             if field in filters:
                 value = filters[field]
                 filter_parts.append(f'{field}="{value}"')

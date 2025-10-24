@@ -15,6 +15,8 @@ GET_ASSET_DETAILS_TOOL = "get_asset_details"
 LIST_DATASETS_TOOL = "list_datasets"
 GET_DATASETS_FOR_QUERY_GENERATION_TOOL = "get_datasets_for_query_generation"
 DISCOVER_DATASETS_FOR_PRP_TOOL = "discover_datasets_for_prp"
+DISCOVER_FROM_PRP_TOOL = "discover_from_prp"
+REQUEST_USER_CONFIRMATION_TOOL = "request_user_confirmation"
 
 
 def get_available_tools() -> List[Tool]:
@@ -316,6 +318,70 @@ def get_available_tools() -> List[Tool]:
                 "required": ["prp_text"]
             }
         ),
+        Tool(
+            name=DISCOVER_FROM_PRP_TOOL,
+            description=(
+                "Extract Section 9: Data Requirements from a PRP and discover relevant source tables "
+                "for each target table specification. Uses Gemini Flash 2.5 to parse target schemas "
+                "and Vertex AI Search to find matching source tables. Returns discovered datasets "
+                "grouped by target requirement, ready for query generation."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "prp_markdown": {
+                        "type": "string",
+                        "description": (
+                            "PRP markdown containing Section 9: Data Requirements. "
+                            "Should include table specifications with descriptions and schemas."
+                        ),
+                        "minLength": 50
+                    },
+                    "max_results_per_table": {
+                        "type": "integer",
+                        "description": "Maximum source tables to return per target table (default: 10)",
+                        "minimum": 1,
+                        "maximum": 20,
+                        "default": 10
+                    }
+                },
+                "required": ["prp_markdown"]
+            }
+        ),
+        Tool(
+            name=REQUEST_USER_CONFIRMATION_TOOL,
+            description=(
+                "Request user confirmation to resolve a data gap. This tool should only be used "
+                "when a critical data gap is identified and the agent cannot find a suitable "
+                "source table automatically. It presents the user with the gap information and "
+                "a list of candidate tables to choose from."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "gap_id": {
+                        "type": "string",
+                        "description": "The unique ID of the data gap."
+                    },
+                    "gap_description": {
+                        "type": "string",
+                        "description": "A description of the data gap."
+                    },
+                    "target_view": {
+                        "type": "string",
+                        "description": "The target view affected by the gap."
+                    },
+                    "candidate_tables": {
+                        "type": "array",
+                        "description": "A list of candidate table IDs that could potentially resolve the gap.",
+                        "items": {
+                            "type": "string"
+                        }
+                    }
+                },
+                "required": ["gap_id", "gap_description", "target_view", "candidate_tables"]
+            }
+        ),
     ]
 
 
@@ -437,6 +503,47 @@ def validate_query_params(
         max_results = arguments.get("max_results", 10)
         if not isinstance(max_results, int) or max_results < 1 or max_results > 50:
             raise ValueError("'max_results' must be between 1 and 50")
+    
+    elif tool_name == DISCOVER_FROM_PRP_TOOL:
+        # Validate prp_markdown
+        if not arguments.get("prp_markdown"):
+            raise ValueError("'prp_markdown' parameter is required")
+        
+        prp_markdown = arguments.get("prp_markdown")
+        if not isinstance(prp_markdown, str) or len(prp_markdown.strip()) < 50:
+            raise ValueError("'prp_markdown' must be a non-empty string with at least 50 characters")
+        
+        # Validate max_results_per_table
+        max_results_per_table = arguments.get("max_results_per_table", 10)
+        if not isinstance(max_results_per_table, int) or max_results_per_table < 1 or max_results_per_table > 20:
+            raise ValueError("'max_results_per_table' must be between 1 and 20")
+    
+    elif tool_name == REQUEST_USER_CONFIRMATION_TOOL:
+        # Validate required fields
+        required = ["gap_id", "gap_description", "target_view", "candidate_tables"]
+        for field in required:
+            if not arguments.get(field):
+                raise ValueError(f"'{field}' parameter is required")
+        
+        # Validate candidate_tables
+        candidate_tables = arguments.get("candidate_tables")
+        if not isinstance(candidate_tables, list) or not all(isinstance(item, str) for item in candidate_tables):
+            raise ValueError("'candidate_tables' must be a list of strings")
+        
+        # Validate gap_id
+        gap_id = arguments.get("gap_id")
+        if not isinstance(gap_id, str) or len(gap_id.strip()) < 1:
+            raise ValueError("'gap_id' must be a non-empty string")
+        
+        # Validate gap_description
+        gap_description = arguments.get("gap_description")
+        if not isinstance(gap_description, str) or len(gap_description.strip()) < 10:
+            raise ValueError("'gap_description' must be a non-empty string with at least 10 characters")
+        
+        # Validate target_view
+        target_view = arguments.get("target_view")
+        if not isinstance(target_view, str) or len(target_view.strip()) < 1:
+            raise ValueError("'target_view' must be a non-empty string")
     
     else:
         raise ValueError(f"Unknown tool: {tool_name}")

@@ -36,6 +36,7 @@ import argparse
 import logging
 import sys
 import os
+import time
 from pathlib import Path
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -48,7 +49,7 @@ load_dotenv()
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from data_discovery_agent.collectors import BigQueryCollector
-from data_discovery_agent.search import MetadataFormatter, MarkdownFormatter
+from data_discovery_agent.search import MarkdownFormatter
 from data_discovery_agent.clients import VertexSearchClient
 from data_discovery_agent.writers.bigquery_writer import BigQueryWriter
 
@@ -296,7 +297,7 @@ def main():
         dest='trigger_import',
         action='store_true',
         default=True,
-        help='Trigger Vertex AI Search import after export (default: enabled)'
+        help='Trigger Vertex AI Search import from BigQuery (requires --export-to-bigquery, default: enabled)'
     )
     parser.add_argument(
         '--skip-import',
@@ -305,8 +306,8 @@ def main():
     )
     parser.add_argument(
         '--datastore',
-        default='data-discovery-metadata',
-        help='Vertex AI Search data store ID'
+        default=os.getenv('VERTEX_DATASTORE_ID', 'data-discovery-metadata'),
+        help='Vertex AI Search data store ID (default: from VERTEX_DATASTORE_ID env var)'
     )
     
     # Other options
@@ -324,13 +325,13 @@ def main():
     )
     parser.add_argument(
         '--bq-dataset',
-        default='data_discovery',
-        help='BigQuery dataset for metadata export'
+        default=os.getenv('BQ_DATASET', 'data_discovery'),
+        help='BigQuery dataset for metadata export (default: from BQ_DATASET env var)'
     )
     parser.add_argument(
         '--bq-table',
-        default='discovered_assets',
-        help='BigQuery table for metadata export'
+        default=os.getenv('BQ_TABLE', 'discovered_assets'),
+        help='BigQuery table for metadata export (default: from BQ_TABLE env var)'
     )
     
     args = parser.parse_args()
@@ -390,43 +391,35 @@ def main():
         
         print(f"\n✓ Collected {len(assets)} assets")
         
-        # Step 2: Export to JSONL
-        print("\nStep 2: Exporting to JSONL...")
-        print("-" * 70)
-        
-        formatter = MetadataFormatter(project_id=args.project)
-        
-        # Determine output path
-        if args.output:
-            output_path = args.output
-        else:
-            timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-            output_path = Path(f"/tmp/bigquery_metadata_{timestamp}.jsonl")
-        
-        # Export locally
-        count = formatter.export_to_jsonl(assets, output_path)
-        print(f"✓ Exported {count} documents to {output_path}")
-        print(f"  File size: {output_path.stat().st_size:,} bytes")
-        
-        # Step 3: Upload JSONL to GCS
-        if not args.skip_gcs:
-            print("\nStep 3: Uploading JSONL to GCS...")
+        # Step 2: Export to BigQuery (when using modern workflow)
+        if args.export_to_bigquery:
+            print("\nStep 2: Exporting to BigQuery...")
             print("-" * 70)
-            
             try:
-                timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-                gcs_uri = formatter.export_batch_to_gcs(
-                    documents=assets,
-                    gcs_bucket=args.gcs_bucket,
-                    batch_id=timestamp,
+                bq_writer = BigQueryWriter(
+                    project_id=args.project,
+                    dataset_id=args.bq_dataset,
+                    table_id=args.bq_table
                 )
-                print(f"✓ Uploaded JSONL to {gcs_uri}")
+                
+                # Convert assets to dicts for BQ writer
+                asset_dicts = [asset.model_dump() if hasattr(asset, 'model_dump') else asset.dict() for asset in assets]
+                
+                bq_writer.write_to_bigquery(assets=asset_dicts)
+                print(f"✓ Exported {len(assets)} assets to BigQuery table: {args.project}.{bq_writer.dataset_id}.{bq_writer.table_id}")
             except Exception as e:
-                print(f"⚠️  JSONL GCS upload failed: {e}")
-                print("   You can manually upload the local file later")
-                gcs_uri = None
+                print(f"⚠️  BigQuery export failed: {e}")
+                logger.exception("BigQuery export error")
+                return 1
+            
+            # Skip JSONL export when using BigQuery
+            output_path = None
+            gcs_uri = None
         else:
-            print("\nStep 3: Skipped JSONL GCS upload (--skip-gcs)")
+            # Legacy JSONL export workflow (not commonly used)
+            print("\nStep 2: JSONL export skipped (use --export-to-bigquery for modern workflow)")
+            print("  Note: JSONL export is deprecated. Use --export-to-bigquery instead.")
+            output_path = None
             gcs_uri = None
         
         # Step 3.5: Generate and upload Markdown reports
@@ -475,51 +468,54 @@ def main():
         else:
             print("\nStep 3.5: Skipped Markdown generation (--skip-markdown)")
         
-        # Step 4: Create documents via API (JSONL not supported in GCS import)
+        # Step 4: Import documents from BigQuery into Vertex AI Search
         if args.trigger_import:
             print("\nStep 4: Importing documents into Vertex AI Search...")
             print("-" * 70)
             
-            try:
-                client = VertexSearchClient(
-                    project_id=args.project,
-                    location="global",
-                    datastore_id=args.datastore,
-                )
-                
-                if args.export_to_bigquery:
-                    # New: Import from BigQuery table
-                    print(f"Importing from BigQuery table: {args.project}.{args.bq_dataset}.{args.bq_table}")
+            if not args.export_to_bigquery:
+                print("⚠️  Skipping import: --export-to-bigquery is required")
+                print("  BigQuery export must be enabled to import into Vertex AI Search.")
+                print("  Re-run with --export-to-bigquery and --trigger-import flags.")
+            else:
+                try:
+                    vertex_location = os.getenv('VERTEX_LOCATION', 'global')
+                    client = VertexSearchClient(
+                        project_id=args.project,
+                        location=vertex_location,
+                        datastore_id=args.datastore,
+                    )
+                    
+                    # Purge existing documents first to start fresh (optional)
+                    try:
+                        print("Purging existing documents from datastore...")
+                        purge_operation = client.purge_documents(force=True)
+                        print(f"✓ Purge started. Operation: {purge_operation}")
+                        print("  Waiting 10 seconds for purge to complete...")
+                        time.sleep(10)
+                    except Exception as e:
+                        print(f"⚠️  Failed to purge documents (skipping): {e}")
+                        print("  Continuing with import without purge.")
+                        print("  Note: This may result in duplicate documents if using auto-generated IDs.")
+                        logger.warning(f"Purge operation failed: {e}")
+                    
+                    # Import from BigQuery view
+                    view_name = f"{args.bq_table}_latest"
+                    print(f"Importing from BigQuery view: {args.project}.{args.bq_dataset}.{view_name}")
+                    print("Using FULL reconciliation mode")
+                    print("Using auto-generated IDs")
                     operation_name = client.import_documents_from_bigquery(
                         dataset_id=args.bq_dataset,
-                        table_id=args.bq_table,
+                        table_id=view_name,
                         reconciliation_mode="FULL",
                     )
                     print(f"✓ Import started. Operation: {operation_name}")
-                    print("  Check the status in the Google Cloud Console.")
-                
-                else:
-                    # Legacy: Import from JSONL file
-                    print(f"Importing from local JSONL file: {output_path}")
-                    print("Note: Using Document Service API (GCS import doesn't support JSONL)")
-                    stats = client.create_documents_from_jsonl_file(
-                        jsonl_path=str(output_path),
-                        batch_size=10,
-                    )
+                    print("  Check the status in the Google Cloud Console:")
+                    print(f"  https://console.cloud.google.com/gen-app-builder/engines?project={args.project}")
                     
-                    print(f"✓ Document indexing complete!")
-                    print(f"  Total:   {stats['total']}")
-                    print(f"  Created: {stats['created']}")
-                    print(f"  Updated: {stats.get('updated', 0)}")
-                    print(f"  Failed:  {stats['failed']}")
-                    print(f"  Skipped: {stats['skipped']}")
-                
-                print(f"\n  Check data store in Cloud Console:")
-                print(f"  https://console.cloud.google.com/gen-app-builder/engines?project={args.project}")
-                
-            except Exception as e:
-                print(f"⚠️  Document import failed: {e}")
-                logger.exception("Document import error")
+                except Exception as e:
+                    print(f"⚠️  Document import failed: {e}")
+                    logger.exception("Document import error")
         
         else:
             print("\nStep 4: Skipped document import (--skip-import flag)")
@@ -546,26 +542,6 @@ def main():
         if not args.skip_markdown and not args.skip_gcs:
             print(f"  Markdown reports: gs://{args.reports_bucket}/")
         
-        # Step 5: Export to BigQuery
-        if args.export_to_bigquery:
-            print("\nStep 5: Exporting to BigQuery...")
-            print("-" * 70)
-            try:
-                bq_writer = BigQueryWriter(
-                    project_id=args.project,
-                    dataset_id=args.bq_dataset,
-                    table_id=args.bq_table
-                )
-                
-                # Convert assets to dicts for BQ writer
-                asset_dicts = [asset.model_dump() for asset in assets]
-                
-                bq_writer.write_to_bigquery(assets=asset_dicts)
-                print(f"✓ Exported {len(assets)} assets to BigQuery table: {args.project}.{bq_writer.dataset_id}.{bq_writer.table_id}")
-            except Exception as e:
-                print(f"⚠️  BigQuery export failed: {e}")
-                logger.exception("BigQuery export error")
-
         print("\nNext steps:")
         if args.trigger_import:
             print("1. Wait 2-10 minutes for indexing to complete in Vertex AI Search")

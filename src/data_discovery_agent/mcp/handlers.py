@@ -22,7 +22,9 @@ from ..schemas.asset_schema import (
     LabelDict,
 )
 from .config import MCPConfig
-from .tools import format_tool_response, format_error_response
+from .tools import format_tool_response, format_error_response, REQUEST_USER_CONFIRMATION_TOOL
+from ..clients.prp_requirement_discovery import UserConfirmationNeeded
+from ..clients.schema_validator import SchemaValidator
 
 logger = logging.getLogger(__name__)
 
@@ -423,6 +425,105 @@ class MCPHandlers:
             logger.error(f"Error handling discover_datasets_for_prp: {e}", exc_info=True)
             return format_error_response(str(e), "discover_datasets_for_prp")
     
+    async def handle_discover_from_prp(
+        self,
+        arguments: Dict[str, Any],
+    ) -> List[Any]:
+        """
+        Handle discover_from_prp tool call.
+        
+        Extracts Section 9 data requirements from PRP using Gemini Flash 2.5,
+        then discovers relevant source tables for each target table specification
+        using semantic search.
+        
+        Args:
+            arguments: Tool arguments including:
+                - prp_markdown: PRP markdown with Section 9
+                - max_results_per_table: Max source tables per target (default: 10)
+            
+        Returns:
+            List of TextContent objects containing JSON response
+        """
+        try:
+            prp_markdown = arguments["prp_markdown"]
+            max_results_per_table = arguments.get("max_results_per_table", 10)
+            resolved_gaps = arguments.get("resolved_gaps", {})
+            
+            logger.info("=" * 80)
+            logger.info("DISCOVER FROM PRP REQUEST")
+            logger.info("=" * 80)
+            logger.info(f"PRP length: {len(prp_markdown)} characters")
+            logger.info(f"Max results per table: {max_results_per_table}")
+            if resolved_gaps:
+                logger.info(f"Applying {len(resolved_gaps)} resolved data gap(s)")
+            
+            # Initialize PRP extractor
+            from ..parsers.prp_extractor import PRPExtractor
+            prp_extractor = PRPExtractor(gemini_api_key=self.config.gemini_api_key)
+            
+            # Initialize Schema Validator
+            schema_validator = SchemaValidator(gemini_api_key=self.config.gemini_api_key)
+
+            # Initialize discovery client
+            from ..clients.prp_requirement_discovery import PRPRequirementDiscovery
+            discovery_client = PRPRequirementDiscovery(
+                vertex_client=self.vertex_client,
+                prp_extractor=prp_extractor,
+                schema_validator=schema_validator,
+            )
+            
+            # Discover source tables for each PRP requirement
+            results = await discovery_client.discover_for_prp(
+                prp_markdown=prp_markdown,
+                max_results_per_table=max_results_per_table,
+                resolved_gaps=resolved_gaps,
+            )
+            
+            # Build response
+            response = {
+                "target_tables": results,
+                "total_targets": len(results),
+                "total_discovered": sum(len(r.get("discovered_tables", [])) for r in results)
+            }
+            
+            logger.info("=" * 80)
+            logger.info(
+                f"DISCOVERY COMPLETE: {response['total_targets']} target(s), "
+                f"{response['total_discovered']} source table(s) found"
+            )
+            logger.info("=" * 80)
+            
+            # Format as JSON response
+            response_json = json.dumps(response, indent=2)
+            return format_tool_response(response_json)
+
+        except UserConfirmationNeeded as e:
+            logger.info("=" * 80)
+            logger.info("USER CONFIRMATION REQUIRED")
+            logger.info("=" * 80)
+            logger.info(f"Data Gap: {e.gap_details.get('description')}")
+            logger.info(f"Target View: {e.gap_details.get('target_view')}")
+            logger.info(f"Candidate Tables: {e.candidate_tables}")
+            
+            # Format a tool_call response to send back to the client
+            tool_call_response = {
+                "tool_call": {
+                    "name": REQUEST_USER_CONFIRMATION_TOOL,
+                    "arguments": {
+                        "gap_id": e.gap_details.get("gap_id"),
+                        "gap_description": e.gap_details.get("description"),
+                        "target_view": e.gap_details.get("target_view"),
+                        "candidate_tables": e.candidate_tables
+                    }
+                }
+            }
+            response_json = json.dumps(tool_call_response, indent=2)
+            return format_tool_response(response_json)
+            
+        except Exception as e:
+            logger.error(f"Error handling discover_from_prp: {e}", exc_info=True)
+            return format_error_response(str(e), "discover_from_prp")
+    
     async def _format_search_results(
         self,
         search_response: Any,
@@ -564,6 +665,7 @@ class MCPHandlers:
                     "dataset_id": metadata.dataset_id,
                     "table_id": metadata.table_id,
                     "asset_type": metadata.asset_type,
+                    "description": metadata.description,
                     "row_count": metadata.row_count,
                     "size_bytes": metadata.size_bytes,
                     "column_count": metadata.column_count,
@@ -571,9 +673,10 @@ class MCPHandlers:
                     "has_phi": metadata.has_phi,
                     "encryption_type": metadata.encryption_type,
                     "monthly_cost_usd": metadata.monthly_cost_usd,
-                    "created_at": metadata.created_at,
+                    "created": metadata.created,
                     "last_modified": metadata.last_modified,
                     "last_accessed": metadata.last_accessed,
+                    "insert_timestamp": metadata.insert_timestamp,
                     "indexed_at": metadata.indexed_at,
                     "completeness_score": metadata.completeness_score,
                     "freshness_score": metadata.freshness_score,
@@ -581,6 +684,11 @@ class MCPHandlers:
                     "team": metadata.team,
                     "environment": metadata.environment,
                     "tags": metadata.tags,
+                    "schema": metadata.schema,
+                    "column_profiles": metadata.column_profiles,
+                    "lineage": metadata.lineage,
+                    "analytical_insights": metadata.analytical_insights,
+                    "key_metrics": metadata.key_metrics,
                 },
                 "snippet": result.snippet,
             }
@@ -685,9 +793,10 @@ class MCPHandlers:
                 "asset_type": asset_type,  # For backwards compatibility with query generation agent
                 
                 # Timestamps (ISO format)
-                "created": metadata.created_at if metadata.created_at else None,
+                "created": metadata.created if metadata.created else None,
                 "last_modified": metadata.last_modified if metadata.last_modified else None,
                 "last_accessed": metadata.last_accessed if metadata.last_accessed else None,
+                "insert_timestamp": metadata.insert_timestamp if metadata.insert_timestamp else None,
                 
                 # Statistics
                 "row_count": metadata.row_count,
@@ -705,17 +814,17 @@ class MCPHandlers:
                 # Schema
                 "schema": schema_fields,
                 
-                # AI-generated insights (empty for now, can be populated later)
-                "analytical_insights": [],
+                # AI-generated insights from metadata
+                "analytical_insights": metadata.analytical_insights if metadata.analytical_insights else [],
                 
-                # Lineage (empty for now, would need separate lineage query)
-                "lineage": [],
+                # Lineage from metadata
+                "lineage": metadata.lineage if metadata.lineage else [],
                 
-                # Profiling (empty for now, would need separate profiling)
-                "column_profiles": [],
+                # Profiling from metadata
+                "column_profiles": metadata.column_profiles if metadata.column_profiles else [],
                 
                 # Metrics
-                "key_metrics": self._extract_key_metrics(metadata),
+                "key_metrics": metadata.key_metrics if metadata.key_metrics else self._extract_key_metrics(metadata),
                 
                 # Run metadata
                 "run_timestamp": run_timestamp,

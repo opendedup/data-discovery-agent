@@ -6,20 +6,36 @@ Usage:
     poetry run python scripts/test-search.py "your search query"
 """
 
+import os
 import sys
+from dotenv import load_dotenv
 from google.cloud import discoveryengine_v1
 
+# Load environment variables
+load_dotenv()
 
-def search(query: str, max_results: int = 10):
-    """Search the Vertex AI Search data store"""
+
+def search(query: str, max_results: int = 10) -> None:
+    """Search the Vertex AI Search data store."""
+    
+    # Get configuration from environment variables
+    project_id = os.getenv('GCP_PROJECT_ID')
+    datastore_id = os.getenv('VERTEX_DATASTORE_ID')
+    location = os.getenv('VERTEX_LOCATION', 'global')
+    
+    # Validate required environment variables
+    if not project_id:
+        raise ValueError("GCP_PROJECT_ID environment variable is required")
+    if not datastore_id:
+        raise ValueError("VERTEX_DATASTORE_ID environment variable is required")
     
     # Initialize client
     client = discoveryengine_v1.SearchServiceClient()
     
-    # Search config
+    # Build search config dynamically
     serving_config = (
-        "projects/lennyisagoodboy/locations/global/collections/default_collection/"
-        "dataStores/data-discovery-metadata/servingConfigs/default_config"
+        f"projects/{project_id}/locations/{location}/collections/default_collection/"
+        f"dataStores/{datastore_id}/servingConfigs/default_config"
     )
     
     # Create search request
@@ -81,7 +97,8 @@ def search(query: str, max_results: int = 10):
         raise
 
 
-if __name__ == "__main__":
+def main() -> None:
+    """Main entry point for the script."""
     if len(sys.argv) < 2:
         print("Usage: poetry run python scripts/test-search.py 'your search query'")
         print("\nExamples:")
@@ -93,4 +110,8 @@ if __name__ == "__main__":
     
     query = " ".join(sys.argv[1:])
     search(query)
+
+
+if __name__ == "__main__":
+    main()
 

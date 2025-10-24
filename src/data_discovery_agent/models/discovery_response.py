@@ -20,7 +20,7 @@ class AssetInfo(BaseModel):
     # Basic stats
     row_count: Optional[int] = None
     size_bytes: Optional[int] = None
-    created_at: Optional[str] = None
+    created: Optional[str] = None  # Renamed from created_at for consistency
     last_modified: Optional[str] = None
     
     # Classification

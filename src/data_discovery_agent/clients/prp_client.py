@@ -252,6 +252,12 @@ class PRPDiscoveryClient:
         
         prompt = self._build_query_generation_prompt(prp_text)
         
+        logger.debug("=" * 80)
+        logger.debug("LLM CONTEXT - PRP QUERY GENERATION:")
+        logger.debug("-" * 80)
+        logger.debug(prompt)
+        logger.debug("=" * 80)
+        
         try:
             response = self.gemini._call_with_retry(prompt, "PRP query generation")
             
@@ -637,10 +643,10 @@ Generate the search queries now:"""
             "table_id": metadata.table_id or "",
             "project_id": metadata.project_id or "",
             "dataset_id": metadata.dataset_id or "",
-            "description": result.snippet or "",
+            "description": metadata.description or result.snippet or "",
             "table_type": metadata.asset_type or "TABLE",
             "asset_type": metadata.asset_type or "TABLE",
-            "created": metadata.created_at if metadata.created_at else None,
+            "created": metadata.created if metadata.created else None,
             "last_modified": metadata.last_modified if metadata.last_modified else None,
             "last_accessed": metadata.last_accessed if metadata.last_accessed else None,
             "row_count": metadata.row_count,
@@ -650,13 +656,13 @@ Generate the search queries now:"""
             "has_phi": metadata.has_phi or False,
             "environment": metadata.environment,
             "labels": [],
-            "schema": [],
-            "analytical_insights": [],
-            "lineage": [],
-            "column_profiles": [],
-            "key_metrics": [],
+            "schema": metadata.schema if metadata.schema else [],
+            "analytical_insights": metadata.analytical_insights if metadata.analytical_insights else [],
+            "lineage": metadata.lineage if metadata.lineage else [],
+            "column_profiles": metadata.column_profiles if metadata.column_profiles else [],
+            "key_metrics": metadata.key_metrics if metadata.key_metrics else [],
             "run_timestamp": datetime.now(timezone.utc).isoformat(),
-            "insert_timestamp": "AUTO",
+            "insert_timestamp": metadata.insert_timestamp or "AUTO",
             "full_markdown": result.full_content or "",
             "owner_email": metadata.owner_email,
             "tags": metadata.tags if metadata.tags else [],
@@ -721,6 +727,12 @@ Generate the search queries now:"""
             Relevance score (0-100)
         """
         prompt = self._build_scoring_prompt(prp_text, dataset)
+        
+        logger.debug("=" * 80)
+        logger.debug(f"LLM CONTEXT - DATASET SCORING ({dataset['table_id']}):")
+        logger.debug("-" * 80)
+        logger.debug(prompt)
+        logger.debug("=" * 80)
         
         try:
             response = self.gemini._call_with_retry(

@@ -24,10 +24,10 @@ class VertexSearchClient:
     Client for Vertex AI Search operations.
     
     Features:
-    - High-level search interface using our data models
-    - Automatic query building and result parsing
-    - Document ingestion from JSONL files
-    - Batch operations for indexing
+    - Semantic search using natural language queries
+    - BigQuery import from discovered_assets_latest view
+    - Automatic schema discovery by Vertex AI Search
+    - FULL reconciliation mode to handle deleted tables
     - Error handling and retries
     """
     
@@ -54,7 +54,7 @@ class VertexSearchClient:
         
         # Initialize Google Cloud clients
         self.search_client = discoveryengine.SearchServiceClient()
-        self.document_client = discoveryengine.DocumentServiceClient()
+        self.document_client = discoveryengine.DocumentServiceClient()  # Still needed for delete operations
         
         # Initialize our helper classes
         self.query_builder = SearchQueryBuilder(project_id)
@@ -84,6 +84,53 @@ class VertexSearchClient:
             f"collections/default_collection/dataStores/{self.datastore_id}/"
             f"branches/default_branch"
         )
+    
+    def _convert_proto_to_dict(self, obj: Any) -> Any:
+        """
+        Recursively convert proto-plus objects to Python dicts.
+        
+        Handles MapComposite, RepeatedComposite, and other proto-plus wrappers
+        that Google Cloud libraries use.
+        
+        Args:
+            obj: Proto-plus object or primitive value
+            
+        Returns:
+            Native Python type (dict, list, or primitive)
+        """
+        # Handle None
+        if obj is None:
+            return None
+        
+        # Handle primitive types
+        if isinstance(obj, (str, int, float, bool)):
+            return obj
+        
+        # Handle dict-like objects (MapComposite)
+        if hasattr(obj, 'items'):
+            try:
+                return {key: self._convert_proto_to_dict(value) for key, value in obj.items()}
+            except Exception:
+                # If items() fails, try to convert as-is
+                pass
+        
+        # Handle list-like objects (RepeatedComposite)
+        if hasattr(obj, '__iter__') and not isinstance(obj, (str, bytes, dict)):
+            try:
+                return [self._convert_proto_to_dict(item) for item in obj]
+            except Exception:
+                # If iteration fails, return as-is
+                pass
+        
+        # Try to convert to dict if it has __dict__
+        if hasattr(obj, '__dict__'):
+            try:
+                return self._convert_proto_to_dict(dict(obj.__dict__))
+            except Exception:
+                pass
+        
+        # Return as-is if no conversion worked
+        return obj
     
     def search(
         self,
@@ -231,29 +278,68 @@ class VertexSearchClient:
             if struct_data is None:
                 struct_data = {}
             
+            # Convert proto-plus objects to Python dict (handles nested structures)
+            struct_data = self._convert_proto_to_dict(struct_data)
+            if not isinstance(struct_data, dict):
+                struct_data = {}
+            
+            # Map BigQuery view schema to AssetMetadata
+            # Note: table_type → asset_type for future extensibility
+            # Construct semantic ID from components (project.dataset.table)
+            # rather than using Vertex AI's sanitized ID (project_dataset_table)
+            project_id = struct_data.get("project_id", self.project_id)
+            dataset_id = struct_data.get("dataset_id", "")
+            table_id = struct_data.get("table_id", "")
+            semantic_id = f"{project_id}.{dataset_id}.{table_id}"
+            
             metadata = AssetMetadata(
-                id=document.id,
-                project_id=struct_data.get("project_id", self.project_id),
-                dataset_id=struct_data.get("dataset_id"),
-                table_id=struct_data.get("table_id"),
-                asset_type=struct_data.get("asset_type", "TABLE"),
+                id=semantic_id,
+                project_id=project_id,
+                dataset_id=dataset_id,
+                table_id=table_id,
+                
+                # Map table_type to asset_type
+                asset_type=struct_data.get("table_type", "TABLE"),
+                
+                # Description
+                description=struct_data.get("description"),
+                
+                # Size and scale
                 row_count=struct_data.get("row_count"),
                 size_bytes=struct_data.get("size_bytes"),
                 column_count=struct_data.get("column_count"),
+                
+                # Security
                 has_pii=struct_data.get("has_pii", False),
                 has_phi=struct_data.get("has_phi", False),
                 encryption_type=struct_data.get("encryption_type"),
+                
+                # Cost
                 monthly_cost_usd=struct_data.get("monthly_cost_usd"),
-                created_at=struct_data.get("created_timestamp"),
-                last_modified=struct_data.get("last_modified_timestamp"),
-                last_accessed=struct_data.get("last_accessed_timestamp"),
-                indexed_at=struct_data.get("indexed_at", ""),
+                
+                # Timestamps (renamed to match view schema)
+                created=struct_data.get("created"),
+                last_modified=struct_data.get("last_modified"),
+                last_accessed=struct_data.get("last_accessed"),
+                insert_timestamp=struct_data.get("insert_timestamp"),
+                indexed_at=struct_data.get("indexed_at", struct_data.get("insert_timestamp", "")),
+                
+                # Quality
                 completeness_score=struct_data.get("completeness_score"),
                 freshness_score=struct_data.get("freshness_score"),
+                
+                # Governance
                 owner_email=struct_data.get("owner_email"),
                 team=struct_data.get("team"),
                 environment=struct_data.get("environment"),
                 tags=struct_data.get("tags", []),
+                
+                # Rich metadata arrays
+                schema=struct_data.get("schema", []),
+                column_profiles=struct_data.get("column_profiles", []),
+                lineage=struct_data.get("lineage", []),
+                analytical_insights=struct_data.get("analytical_insights", []),
+                key_metrics=struct_data.get("key_metrics", []),
             )
             
             # Extract snippet
@@ -348,7 +434,9 @@ class VertexSearchClient:
         if hasattr(response_item, 'derived_struct_data'):
             derived_data = response_item.derived_struct_data
             if derived_data:
-                snippets = derived_data.get('snippets', [])
+                # Convert proto-plus objects to Python dict
+                derived_data = self._convert_proto_to_dict(derived_data)
+                snippets = derived_data.get('snippets', []) if isinstance(derived_data, dict) else []
                 if snippets:
                     return snippets[0].get('snippet', '')
         
@@ -381,289 +469,26 @@ class VertexSearchClient:
             f"ws=!1m5!1m4!4m3!1s{metadata.project_id}!2s{metadata.dataset_id}!3s{metadata.table_id}"
         )
     
-    def create_document(
-        self,
-        document_id: str,
-        struct_data: Dict[str, Any],
-        content: str,
-    ) -> str:
-        """
-        Create a single document in Vertex AI Search using the Document Service API.
-        
-        This bypasses the GCS import limitation and allows JSONL-style structured data.
-        
-        Args:
-            document_id: Unique document ID (e.g., "project.dataset.table")
-            struct_data: Structured metadata (filterable fields)
-            content: Text content for search
-        
-        Returns:
-            Document name
-        """
-        
-        logger.debug(f"Creating document: {document_id}")
-        
-        document = discoveryengine.Document(
-            id=document_id,
-            struct_data=struct_data,
-            content=discoveryengine.Document.Content(
-                mime_type="text/plain",
-                raw_bytes=content.encode('utf-8'),
-            ),
-        )
-        
-        request = discoveryengine.CreateDocumentRequest(
-            parent=self.branch_path,
-            document=document,
-            document_id=document_id,
-        )
-        
-        created_doc = self.document_client.create_document(request=request)
-        
-        logger.debug(f"Created document: {created_doc.name}")
-        
-        return created_doc.name
-    
-    def update_document(
-        self,
-        document_id: str,
-        struct_data: Dict[str, Any],
-        content: str,
-    ) -> str:
-        """
-        Update an existing document in Vertex AI Search.
-        
-        Args:
-            document_id: Unique document ID (e.g., "project.dataset.table")
-            struct_data: Structured metadata (filterable fields)
-            content: Text content for search
-        
-        Returns:
-            Document name
-        """
-        
-        logger.debug(f"Updating document: {document_id}")
-        
-        # Build document path
-        document_path = f"{self.branch_path}/documents/{document_id}"
-        
-        document = discoveryengine.Document(
-            name=document_path,
-            id=document_id,
-            struct_data=struct_data,
-            content=discoveryengine.Document.Content(
-                mime_type="text/plain",
-                raw_bytes=content.encode('utf-8'),
-            ),
-        )
-        
-        request = discoveryengine.UpdateDocumentRequest(
-            document=document,
-        )
-        
-        updated_doc = self.document_client.update_document(request=request)
-        
-        logger.debug(f"Updated document: {updated_doc.name}")
-        
-        return updated_doc.name
-    
-    def upsert_document(
-        self,
-        document_id: str,
-        struct_data: Dict[str, Any],
-        content: str,
-    ) -> tuple[str, str]:
-        """
-        Create or update a document (upsert).
-        
-        Args:
-            document_id: Unique document ID (e.g., "project.dataset.table")
-            struct_data: Structured metadata (filterable fields)
-            content: Text content for search
-        
-        Returns:
-            Tuple of (document_name, operation: "created" or "updated")
-        """
-        
-        try:
-            # Try to create first
-            doc_name = self.create_document(document_id, struct_data, content)
-            return (doc_name, "created")
-        except Exception as e:
-            error_msg = str(e)
-            
-            # If document already exists, update it
-            if "409" in error_msg and "exists" in error_msg.lower():
-                doc_name = self.update_document(document_id, struct_data, content)
-                return (doc_name, "updated")
-            else:
-                # Re-raise other errors
-                raise
-    
-    def create_documents_from_jsonl_file(
-        self,
-        jsonl_path: str,
-        batch_size: int = 10,
-        upsert: bool = True,
-    ) -> Dict[str, int]:
-        """
-        Create/update documents from a local JSONL file.
-        
-        Since Vertex AI Search doesn't support JSONL import from GCS,
-        we read the JSONL and create/update documents via API.
-        
-        Args:
-            jsonl_path: Path to local JSONL file
-            batch_size: Number of documents to create in parallel
-            upsert: If True, update existing documents. If False, skip existing documents.
-        
-        Returns:
-            Statistics dict
-        """
-        
-        import json
-        from pathlib import Path
-        
-        operation = "Upserting" if upsert else "Creating"
-        logger.info(f"{operation} documents from {jsonl_path}")
-        
-        stats = {
-            "total": 0,
-            "created": 0,
-            "updated": 0,
-            "failed": 0,
-            "skipped": 0,
-        }
-        
-        json_path = Path(jsonl_path)
-        if not json_path.exists():
-            raise FileNotFoundError(f"JSONL file not found: {jsonl_path}")
-        
-        with open(json_path, 'r') as f:
-            for line_num, line in enumerate(f, 1):
-                if not line.strip():
-                    continue
-                
-                stats["total"] += 1
-                
-                try:
-                    # Parse JSONL line
-                    doc_data = json.loads(line)
-                    
-                    doc_id = doc_data.get("id")
-                    struct_data = doc_data.get("structData", {})
-                    content_data = doc_data.get("content", {})
-                    content_text = content_data.get("text", "")
-                    
-                    if not doc_id:
-                        logger.warning(f"Line {line_num}: No 'id' field, skipping")
-                        stats["skipped"] += 1
-                        continue
-                    
-                    # Sanitize document ID: replace periods with underscores
-                    # Vertex AI Search document IDs can only contain: [a-zA-Z0-9-_]
-                    sanitized_id = doc_id.replace(".", "_")
-                    
-                    if upsert:
-                        # Create or update document
-                        _, operation = self.upsert_document(
-                            document_id=sanitized_id,
-                            struct_data=struct_data,
-                            content=content_text,
-                        )
-                        
-                        if operation == "created":
-                            stats["created"] += 1
-                        else:
-                            stats["updated"] += 1
-                        
-                        # Progress update
-                        total_processed = stats["created"] + stats["updated"]
-                        if total_processed % 10 == 0:
-                            logger.info(f"Processed {total_processed}/{stats['total']} documents...")
-                    else:
-                        # Create document only (skip if exists)
-                        self.create_document(
-                            document_id=sanitized_id,
-                            struct_data=struct_data,
-                            content=content_text,
-                        )
-                        
-                        stats["created"] += 1
-                        
-                        # Progress update
-                        if stats["created"] % 10 == 0:
-                            logger.info(f"Created {stats['created']}/{stats['total']} documents...")
-                
-                except json.JSONDecodeError as e:
-                    logger.error(f"Line {line_num}: JSON decode error: {e}")
-                    stats["failed"] += 1
-                
-                except Exception as e:
-                    error_msg = str(e)
-                    
-                    # Handle document already exists (409 conflict) - only in non-upsert mode
-                    if not upsert and "409" in error_msg and "exists" in error_msg.lower():
-                        logger.info(f"Line {line_num}: Document {sanitized_id} already exists, skipping")
-                        stats["skipped"] += 1
-                    else:
-                        logger.error(f"Line {line_num}: Failed to process document: {e}")
-                        stats["failed"] += 1
-        
-        logger.info(f"Document creation complete: {stats}")
-        
-        return stats
-    
-    def import_documents_from_gcs(
-        self,
-        gcs_uri: str,
-        reconciliation_mode: str = "INCREMENTAL",
-    ) -> str:
-        """
-        Import UNSTRUCTURED documents from GCS (PDF, HTML, TXT, DOCX, PPTX, XLSX).
-        
-        Note: This does NOT support JSONL files. For structured data,
-        use create_documents_from_jsonl_file() instead.
-        
-        Args:
-            gcs_uri: GCS URI pattern (e.g., gs://bucket/path/*.pdf)
-            reconciliation_mode: FULL or INCREMENTAL
-        
-        Returns:
-            Operation name for tracking
-        """
-        
-        logger.info(f"Starting unstructured document import from {gcs_uri}")
-        logger.warning("GCS import only supports: PDF, HTML, TXT, DOCX, PPTX, XLSX (NOT JSONL)")
-        
-        import_request = discoveryengine.ImportDocumentsRequest(
-            parent=self.branch_path,
-            gcs_source=discoveryengine.GcsSource(
-                input_uris=[gcs_uri],
-                data_schema="content",
-            ),
-            reconciliation_mode=reconciliation_mode,
-        )
-        
-        operation = self.document_client.import_documents(request=import_request)
-        
-        logger.info(f"Import operation started: {operation.operation.name}")
-        
-        return operation.operation.name
-
     def import_documents_from_bigquery(
         self,
         dataset_id: str,
         table_id: str,
-        reconciliation_mode: str = "INCREMENTAL",
+        reconciliation_mode: str = "FULL",
     ) -> str:
         """
         Import documents from a BigQuery table.
+        
+        Uses FULL reconciliation mode by default to ensure deleted tables
+        are removed from the search index (keeps index in sync with source).
+        
+        Uses auto-generated IDs - Vertex AI generates internal document IDs
+        automatically. Note: Purge the datastore before import to avoid
+        accumulating duplicate documents.
 
         Args:
             dataset_id: The BigQuery dataset ID.
             table_id: The BigQuery table ID.
-            reconciliation_mode: FULL or INCREMENTAL.
+            reconciliation_mode: FULL (default) or INCREMENTAL.
 
         Returns:
             Operation name for tracking.
@@ -679,10 +504,50 @@ class VertexSearchClient:
                 data_schema="custom",
             ),
             reconciliation_mode=reconciliation_mode,
+            auto_generate_ids=True,  # Let Vertex AI generate document IDs
         )
 
         operation = self.document_client.import_documents(request=request)
         logger.info(f"Import operation started: {operation.operation.name}")
+        return operation.operation.name
+    
+    def purge_documents(self, force: bool = True) -> str:
+        """
+        Purge all documents from the datastore.
+        
+        This operation deletes all documents in the datastore. Use this before
+        importing new data to ensure a clean state and avoid duplicate documents
+        when using auto-generated IDs.
+        
+        Args:
+            force: If True, actually delete documents. If False, return expected 
+                   count without deleting (dry run).
+        
+        Returns:
+            Operation name for tracking.
+        """
+        from google.api_core.client_options import ClientOptions
+        
+        logger.info(f"Starting purge operation for datastore {self.datastore_id} (force={force})")
+        
+        # Configure client for regional endpoints
+        client_options = (
+            ClientOptions(api_endpoint=f"{self.location}-discoveryengine.googleapis.com")
+            if self.location != "global"
+            else None
+        )
+        
+        document_client = discoveryengine.DocumentServiceClient(client_options=client_options)
+        
+        request = discoveryengine.PurgeDocumentsRequest(
+            parent=self.branch_path,
+            filter="*",
+            force=force,
+        )
+        
+        operation = document_client.purge_documents(request=request)
+        logger.info(f"Purge operation started: {operation.operation.name}")
+        
         return operation.operation.name
     
     def wait_for_import(
@@ -694,7 +559,7 @@ class VertexSearchClient:
         Wait for import operation to complete.
         
         Args:
-            operation_name: Operation name from import_documents_from_gcs
+            operation_name: Operation name from import_documents_from_bigquery
             timeout: Maximum wait time in seconds
         
         Returns:
@@ -785,15 +650,24 @@ class VertexSearchClient:
 if __name__ == "__main__":
     # Initialize client
     client = VertexSearchClient(
-        project_id="lennyisagoodboy",
-        location="us-central1",
+        project_id="your-project-id",
+        location="global",
         datastore_id="data-discovery-metadata",
-        reports_bucket="lennyisagoodboy-data-discovery-reports",
+        reports_bucket="your-reports-bucket",
     )
     
     # Health check
     if client.health_check():
         print("✓ Vertex AI Search is healthy")
+    
+    # Import from BigQuery
+    print("\nImporting from BigQuery...")
+    operation = client.import_documents_from_bigquery(
+        dataset_id="data_discovery",
+        table_id="discovered_assets_latest",
+        reconciliation_mode="FULL",
+    )
+    print(f"✓ Import started: {operation}")
     
     # Example search
     search_req = SearchRequest(

@@ -5,7 +5,7 @@ Data Models for Search Requests and Responses
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class SortOrder(str, Enum):
@@ -62,14 +62,28 @@ class SearchRequest(BaseModel):
 
 
 class AssetMetadata(BaseModel):
-    """Metadata for a discovered asset"""
+    """
+    Metadata for a discovered asset.
+    
+    BREAKING CHANGES in v2.0:
+    - Renamed: created_at → created
+    - Renamed: last_modified remains but was last_modified_timestamp
+    - Renamed: last_accessed remains but was last_accessed_timestamp
+    - Added: description, schema, column_profiles, lineage, analytical_insights, key_metrics
+    - Added: insert_timestamp
+    """
+    
+    model_config = ConfigDict(protected_namespaces=())
     
     # Identity
     id: str
     project_id: str
     dataset_id: Optional[str] = None
     table_id: Optional[str] = None
-    asset_type: str
+    asset_type: str  # "TABLE" or "VIEW" (mapped from table_type)
+    
+    # Description
+    description: Optional[str] = Field(None, description="Table/view description")
     
     # Size and scale
     row_count: Optional[int] = None
@@ -84,11 +98,12 @@ class AssetMetadata(BaseModel):
     # Cost
     monthly_cost_usd: Optional[float] = None
     
-    # Timestamps
-    created_at: Optional[str] = None
-    last_modified: Optional[str] = None
-    last_accessed: Optional[str] = None
-    indexed_at: str
+    # Timestamps (renamed to match BigQuery view schema)
+    created: Optional[str] = Field(None, description="Creation timestamp")
+    last_modified: Optional[str] = Field(None, description="Last modification timestamp")
+    last_accessed: Optional[str] = Field(None, description="Last access timestamp")
+    insert_timestamp: Optional[str] = Field(None, description="When record was inserted into discovery system")
+    indexed_at: str = Field("", description="When indexed in Vertex AI Search")
     
     # Quality
     completeness_score: Optional[float] = None
@@ -99,6 +114,28 @@ class AssetMetadata(BaseModel):
     team: Optional[str] = None
     environment: Optional[str] = None
     tags: List[str] = Field(default_factory=list)
+    
+    # Rich metadata from discovered_assets_latest view
+    schema: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="Column definitions with name, type, description, sample_values"
+    )
+    column_profiles: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="Column statistics: distinct_count, null_percentage, min/max, avg"
+    )
+    lineage: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="Data lineage with source and target relationships"
+    )
+    analytical_insights: List[str] = Field(
+        default_factory=list,
+        description="AI-generated analytical questions about the data"
+    )
+    key_metrics: List[Any] = Field(
+        default_factory=list,
+        description="Important business metrics"
+    )
 
 
 class SearchResultItem(BaseModel):
