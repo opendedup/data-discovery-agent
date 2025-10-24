@@ -48,7 +48,7 @@ class SearchRequest(BaseModel):
     include_full_content: bool = Field(False, description="Include full content in results")
     enable_suggestions: bool = Field(True, description="Generate query suggestions")
     
-    class Config:
+    model_config = ConfigDict(
         json_schema_extra = {
             "example": {
                 "query": "customer tables with PII",
@@ -59,6 +59,7 @@ class SearchRequest(BaseModel):
                 "sort_order": "desc"
             }
         }
+    )
 
 
 class AssetMetadata(BaseModel):
@@ -226,7 +227,7 @@ class AggregationRequest(BaseModel):
     aggregate_field: Optional[str] = Field(None, description="Field to aggregate (for sum/avg)")
     top_k: int = Field(10, description="Number of top results", ge=1, le=100)
     
-    class Config:
+    model_config = ConfigDict(
         json_schema_extra = {
             "example": {
                 "query": "PII tables",
@@ -235,6 +236,7 @@ class AggregationRequest(BaseModel):
                 "top_k": 10
             }
         }
+    )
 
 
 class AggregationResponse(BaseModel):
@@ -248,7 +250,7 @@ class AggregationResponse(BaseModel):
     )
     total_groups: int
     
-    class Config:
+    model_config = ConfigDict(
         json_schema_extra = {
             "example": {
                 "query": "PII tables",
@@ -260,4 +262,5 @@ class AggregationResponse(BaseModel):
                 "total_groups": 5
             }
         }
+    )
 

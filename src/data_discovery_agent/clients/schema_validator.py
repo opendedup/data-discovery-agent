@@ -3,12 +3,22 @@ import logging
 import google.generativeai as genai
 from google.generativeai.types import GenerationConfig
 import json
+from pydantic import BaseModel
+
+from ..schemas.search_planning import TargetColumn
 
 logger = logging.getLogger(__name__)
 
+
+class ValidationResult(BaseModel):
+    """Data model for the structured output of the schema validation LLM call."""
+    is_good_fit: bool
+    reasoning: str
+
+
 class SchemaValidator:
     """
-    Validates if a source table's schema can fulfill the requirements of a target view.
+    Validates if a source table's schema can fulfill a specific, targeted data requirement.
     """
 
     def __init__(self, gemini_api_key: str):
@@ -19,32 +29,34 @@ class SchemaValidator:
             gemini_api_key: Gemini API key for authentication.
         """
         genai.configure(api_key=gemini_api_key)
-        self.model = genai.GenerativeModel("gemini-2.5-flash")
+        self.model = genai.GenerativeModel("gemini-flash-latest")
         self.logger = logging.getLogger(__name__)
 
     def validate_schema(
         self,
         source_schema: List[Dict[str, Any]],
-        target_view: Dict[str, Any],
-        data_gap: Dict[str, Any] = None,
+        target_columns: List[TargetColumn],
+        conceptual_group: str,
         source_table_name: str = "UNKNOWN"
     ) -> bool:
         """
-        Validate a source schema against a target view's requirements using an LLM.
+        Validate a source schema against a targeted list of columns using an LLM.
         
         Args:
             source_schema: The schema of the source table.
-            target_view: The specification of the target view.
-            data_gap: The data gap information, if any.
+            target_columns: The specific subset of columns this source is expected to provide.
+            conceptual_group: The high-level description of the data being sought.
             source_table_name: The name of the source table being validated.
             
         Returns:
             True if the schema is a good fit, False otherwise.
         """
-        prompt = self._build_validation_prompt(source_schema, target_view, data_gap)
+        prompt = self._build_validation_prompt(
+            source_schema, target_columns, conceptual_group
+        )
         
         logger.debug("=" * 80)
-        logger.debug(f"LLM CONTEXT - SCHEMA VALIDATION ({source_table_name}):")
+        logger.debug(f"LLM CONTEXT - SCHEMA VALIDATION ({source_table_name} for {conceptual_group}):")
         logger.debug("-" * 80)
         logger.debug(prompt)
         logger.debug("=" * 80)
@@ -54,88 +66,74 @@ class SchemaValidator:
                 prompt,
                 generation_config=GenerationConfig(
                     temperature=0.0,
-                    response_mime_type="application/json"
-                )
+                    response_mime_type="application/json",
+                ),
             )
-            
+
+            # Parse the JSON response manually and validate with Pydantic
+            response_text = response.text
+            response_data = json.loads(response_text)
+            result = ValidationResult(**response_data)
+
             logger.debug("=" * 80)
             logger.debug(f"LLM RESPONSE - SCHEMA VALIDATION ({source_table_name}):")
             logger.debug("-" * 80)
-            logger.debug(response.text)
+            logger.debug(result.model_dump_json(indent=2))
             logger.debug("=" * 80)
-            
-            result = json.loads(response.text)
-            is_good_fit = result.get("is_good_fit", False)
-            reasoning = result.get('reasoning', 'N/A')
-            
+
             # Log detailed validation results
-            if is_good_fit:
+            if result.is_good_fit:
                 self.logger.info(f"    ✓ Good Fit: {source_table_name}")
-                self.logger.info(f"      Reasoning: {reasoning}")
+                self.logger.info(f"      Reasoning: {result.reasoning}")
             else:
                 self.logger.info(f"    ✗ Poor Fit: {source_table_name}")
-                self.logger.info(f"      Reasoning: {reasoning}")
+                self.logger.info(f"      Reasoning: {result.reasoning}")
             
-            return is_good_fit
+            return result.is_good_fit
             
         except Exception as e:
             self.logger.error(f"    ✗ Schema validation failed for {source_table_name}: {e}")
+            if 'response' in locals() and hasattr(response, 'text'):
+                self.logger.error(f"LLM Response Text: {response.text}")
             return False
 
     def _build_validation_prompt(
         self,
         source_schema: List[Dict[str, Any]],
-        target_view: Dict[str, Any],
-        data_gap: Dict[str, Any] = None
+        target_columns: List[TargetColumn],
+        conceptual_group: str,
     ) -> str:
         """
         Build the prompt for the LLM-based schema validation.
         """
-        target_schema_str = json.dumps(target_view.get("columns", []), indent=2)
+        target_columns_str = json.dumps(
+            [col.model_dump() for col in target_columns], indent=2
+        )
         source_schema_str = json.dumps(source_schema, indent=2)
-        
-        gap_info = ""
-        if data_gap:
-            gap_info = f"""
-CRITICAL DATA GAP:
-A known data gap for this view is: "{data_gap.get('description')}"
-The required information to fill this gap is: "{data_gap.get('required_information')}"
-Does the source table help resolve this specific gap?
-"""
 
         return f"""
-Analyze if the source table schema is a USEFUL CANDIDATE for creating the target view.
+        Analyze if the source table schema is a USEFUL CANDIDATE for a specific data requirement.
 
-TARGET VIEW:
-Name: {target_view.get('table_name')}
-Purpose: {target_view.get('description')}
-Schema:
-{target_schema_str}
+        CONTEXT: We are searching for data for the conceptual group: "{conceptual_group}".
 
-SOURCE TABLE SCHEMA:
-{source_schema_str}
+        REQUIRED COLUMNS FOR THIS GROUP:
+        We need to find a source that can provide the following columns:
+        {target_columns_str}
 
-{gap_info}
+        CANDIDATE SOURCE TABLE SCHEMA:
+        Below is the schema of a candidate source table we have found.
+        {source_schema_str}
 
-Is this source table a USEFUL CANDIDATE for building the target view?
+        TASK:
+        Based on the `CANDIDATE SOURCE TABLE SCHEMA`, determine if it is a "good fit" to provide the data for the `REQUIRED COLUMNS FOR THIS GROUP`.
 
-IMPORTANT: We are looking for CANDIDATE tables with significant overlap, not perfect matches.
+        IMPORTANT:
+        - A "good fit" means the source table contains a high degree of conceptual overlap with the required columns. Column names do not need to match exactly.
+        - It is acceptable and expected that the source table will NOT contain columns from other conceptual groups. Focus only on its ability to fulfill THIS specific requirement.
 
-Mark as "is_good_fit: true" if:
-- The source table contains MANY of the key columns (>50% overlap with target)
-- The source has core identifier columns (e.g., IDs, dates, keys needed for joins)
-- Missing some derived or calculated columns is ACCEPTABLE
-- Column names do not need to match exactly, but the concepts should be present
-- Focus on whether this table provides valuable SOURCE DATA, even if transformations are needed
-
-Mark as "is_good_fit: false" ONLY if:
-- The table has minimal column overlap (<30%)
-- It's clearly for a different domain/purpose  
-- It lacks the fundamental identifier columns needed for joins
-
-Respond with ONLY a JSON object in this format:
-{{
-  "is_good_fit": boolean,
-  "reasoning": "Explain the approximate column overlap and which key columns are present or missing. Be specific about what makes this a good or poor candidate."
-}}
-"""
+        Respond with ONLY a JSON object in this format:
+        {{
+          "is_good_fit": boolean,
+          "reasoning": "Explain why this is a good or poor candidate for providing the specified required columns. Be specific about column overlap or conceptual mismatches."
+        }}
+        """

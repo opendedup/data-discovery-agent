@@ -437,6 +437,7 @@ def create_http_app() -> FastAPI:
                 raise HTTPException(status_code=400, detail="Missing 'name' in request")
             
             logger.info(f"Tool called: {tool_name}")
+            logger.debug(f"Arguments received: {json.dumps(arguments, indent=2)}")
             
             # Import tool names
             from .tools import (
@@ -464,7 +465,7 @@ def create_http_app() -> FastAPI:
             elif tool_name == DISCOVER_DATASETS_FOR_PRP_TOOL:
                 result = await handlers_instance.handle_discover_datasets_for_prp(arguments)
             elif tool_name == DISCOVER_FROM_PRP_TOOL:
-                result = await handlers_instance.handle_discover_from_prp(arguments)
+                result = await handlers_instance.handle_discover_from_prp(arguments, request=request)
             else:
                 raise HTTPException(status_code=404, detail=f"Unknown tool: {tool_name}")
             

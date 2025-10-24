@@ -5,7 +5,7 @@ Discovery Request Models
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 
 
 class QueryType(str, Enum):
@@ -61,7 +61,7 @@ class DiscoveryRequest(BaseModel):
     # User identity (for audit trail)
     user_email: Optional[str] = Field(None, description="User making request")
     
-    class Config:
+    model_config = ConfigDict(
         json_schema_extra = {
             "example": {
                 "query_type": "search",
@@ -71,6 +71,7 @@ class DiscoveryRequest(BaseModel):
                 "max_results": 20
             }
         }
+    )
 
 
 class InspectRequest(BaseModel):

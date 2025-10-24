@@ -337,15 +337,45 @@ def get_available_tools() -> List[Tool]:
                         ),
                         "minLength": 50
                     },
-                    "max_results_per_table": {
+                    "target_schema": {
+                        "type": "object",
+                        "description": (
+                            "The JSON schema of the target table/view specification. "
+                            "Must include target_table_name, target_description, and target_columns."
+                        ),
+                        "properties": {
+                            "target_table_name": {
+                                "type": "string",
+                                "description": "Name of the target table or view"
+                            },
+                            "target_description": {
+                                "type": "string",
+                                "description": "Description of the target table's purpose"
+                            },
+                            "target_columns": {
+                                "type": "array",
+                                "description": "Array of column specifications",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "name": {"type": "string"},
+                                        "type": {"type": "string"},
+                                        "description": {"type": "string"}
+                                    }
+                                }
+                            }
+                        },
+                        "required": ["target_table_name", "target_columns"]
+                    },
+                    "max_results_per_query": {
                         "type": "integer",
-                        "description": "Maximum source tables to return per target table (default: 10)",
+                        "description": "Maximum source tables to return per search query (default: 5)",
                         "minimum": 1,
                         "maximum": 20,
-                        "default": 10
+                        "default": 5
                     }
                 },
-                "required": ["prp_markdown"]
+                "required": ["prp_markdown", "target_schema"]
             }
         ),
         Tool(
@@ -513,10 +543,24 @@ def validate_query_params(
         if not isinstance(prp_markdown, str) or len(prp_markdown.strip()) < 50:
             raise ValueError("'prp_markdown' must be a non-empty string with at least 50 characters")
         
-        # Validate max_results_per_table
-        max_results_per_table = arguments.get("max_results_per_table", 10)
-        if not isinstance(max_results_per_table, int) or max_results_per_table < 1 or max_results_per_table > 20:
-            raise ValueError("'max_results_per_table' must be between 1 and 20")
+        # Validate target_schema
+        if not arguments.get("target_schema"):
+            raise ValueError("'target_schema' parameter is required")
+        
+        target_schema = arguments.get("target_schema")
+        if not isinstance(target_schema, dict):
+            raise ValueError("'target_schema' must be a dictionary")
+        
+        if not target_schema.get("target_table_name"):
+            raise ValueError("'target_schema' must include 'target_table_name'")
+        
+        if not target_schema.get("target_columns"):
+            raise ValueError("'target_schema' must include 'target_columns'")
+        
+        # Validate max_results_per_query
+        max_results_per_query = arguments.get("max_results_per_query", 5)
+        if not isinstance(max_results_per_query, int) or max_results_per_query < 1 or max_results_per_query > 20:
+            raise ValueError("'max_results_per_query' must be between 1 and 20")
     
     elif tool_name == REQUEST_USER_CONFIRMATION_TOOL:
         # Validate required fields
