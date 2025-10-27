@@ -83,7 +83,7 @@ class PRPDiscoveryClient:
         # Initialize Gemini client
         self.gemini = GeminiDescriber(
             api_key=gemini_api_key,
-            model_name="gemini-2.5-pro",
+            model_name="gemini-flash-latest",
         )
         
         if not self.gemini.is_enabled:

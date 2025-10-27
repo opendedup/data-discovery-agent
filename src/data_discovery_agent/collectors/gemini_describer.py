@@ -33,7 +33,7 @@ class GeminiDescriber:
     def __init__(
         self, 
         api_key: Optional[str] = None, 
-        model_name: str = "gemini-2.5-flash",
+        model_name: str = "gemini-flash-latest",
         max_retries: int = 5,
         initial_retry_delay: float = 1.0,
     ):
@@ -42,7 +42,7 @@ class GeminiDescriber:
         
         Args:
             api_key: Gemini API key (or uses GEMINI_API_KEY env var from .env file)
-            model_name: Gemini model to use (default: gemini-2.5-flash)
+            model_name: Gemini model to use (default: gemini-flash-latest)
             max_retries: Maximum number of retry attempts for rate limit errors (default: 5)
             initial_retry_delay: Initial delay in seconds for exponential backoff (default: 1.0)
             
