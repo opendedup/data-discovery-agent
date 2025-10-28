@@ -42,6 +42,7 @@ class BigQueryWriter:
             bigquery.SchemaField("table_id", "STRING", "REQUIRED", description="The ID of the BigQuery table."),
             bigquery.SchemaField("project_id", "STRING", description="The GCP project ID containing the table."),
             bigquery.SchemaField("dataset_id", "STRING", description="The BigQuery dataset ID containing the table."),
+            bigquery.SchemaField("dataset_region", "STRING", description="The GCP region/location where the dataset resides (e.g., 'US', 'us-central1', 'EU')."),
             bigquery.SchemaField("description", "STRING", description="The user-provided or Gemini-generated description of the table."),
             bigquery.SchemaField("table_type", "STRING", description="The type of the table (e.g., TABLE, VIEW)."),
             bigquery.SchemaField("created", "TIMESTAMP", description="The timestamp when the table was created."),

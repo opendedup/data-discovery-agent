@@ -58,6 +58,7 @@ class DiscoveredAssetDict(TypedDict, total=False):
     table_id: str
     project_id: str
     dataset_id: str
+    dataset_region: Optional[str]  # e.g., "US", "us-central1", "EU"
     
     # Metadata
     description: Optional[str]

@@ -13,7 +13,7 @@ from google.cloud import storage
 from mcp.server.models import InitializationOptions
 from mcp.server import Server, NotificationOptions
 from mcp.server.stdio import stdio_server
-from mcp.types import Tool, TextContent
+from mcp.types import Tool, TextContent, Resource
 
 from ..clients.vertex_search_client import VertexSearchClient
 from .config import MCPConfig, load_config
@@ -144,6 +144,56 @@ def create_mcp_server(config: MCPConfig | None = None) -> Server:
         except Exception as e:
             logger.error(f"Error handling tool {name}: {e}", exc_info=True)
             return [TextContent(type="text", text=f"Error: {str(e)}")]
+    
+    # Register list_resources handler
+    @server.list_resources()
+    async def handle_list_resources() -> list[Resource]:
+        """
+        List available MCP resources.
+        
+        Returns:
+            List of available resources
+        """
+        logger.debug("Listing available resources")
+        return [
+            Resource(
+                uri="config://discovery",
+                name="Discovery Configuration",
+                description="Current data discovery configuration including region filters and settings",
+                mimeType="application/json",
+            )
+        ]
+    
+    # Register read_resource handler
+    @server.read_resource()
+    async def handle_read_resource(uri: str) -> str:
+        """
+        Read resource content.
+        
+        Args:
+            uri: Resource URI
+            
+        Returns:
+            Resource content as string
+        """
+        logger.info(f"Reading resource: {uri}")
+        
+        if uri == "config://discovery":
+            import json
+            config_data = {
+                "discovery_region": config.discovery_region or "all",
+                "description": "Region filter for BigQuery dataset discovery",
+                "scope": "Datasets outside this region are excluded during collection" if config.discovery_region else "All regions are scanned",
+                "project_id": config.project_id,
+                "vertex_location": config.vertex_location,
+                "datastore_id": config.vertex_datastore_id,
+            }
+            return json.dumps(config_data, indent=2)
+        
+        else:
+            error_msg = f"Unknown resource: {uri}"
+            logger.error(error_msg)
+            raise ValueError(error_msg)
     
     return server
 

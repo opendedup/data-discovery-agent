@@ -410,6 +410,40 @@ def create_http_app() -> FastAPI:
             logger.error(f"Error listing tools: {e}", exc_info=True)
             raise HTTPException(status_code=500, detail=str(e))
     
+    @app.get("/mcp/resources")
+    async def list_resources() -> Dict[str, Any]:
+        """List available MCP resources."""
+        return {
+            "resources": [
+                {
+                    "uri": "config://discovery",
+                    "name": "Discovery Configuration",
+                    "description": "Current data discovery configuration including region filters and settings",
+                    "mimeType": "application/json",
+                }
+            ]
+        }
+    
+    @app.get("/mcp/resource")
+    async def read_resource(uri: str) -> Dict[str, Any]:
+        """Read a specific resource."""
+        if not config_instance:
+            raise HTTPException(status_code=503, detail="MCP server not initialized")
+        
+        if uri == "config://discovery":
+            config_data = {
+                "discovery_region": config_instance.discovery_region or "all",
+                "description": "Region filter for BigQuery dataset discovery",
+                "scope": "Datasets outside this region are excluded during collection" if config_instance.discovery_region else "All regions are scanned",
+                "project_id": config_instance.project_id,
+                "vertex_location": config_instance.vertex_location,
+                "datastore_id": config_instance.vertex_datastore_id,
+            }
+            return config_data
+        
+        else:
+            raise HTTPException(status_code=404, detail=f"Unknown resource: {uri}")
+    
     @app.post("/mcp/call-tool")
     async def call_tool(request: Request) -> Dict[str, Any]:
         """

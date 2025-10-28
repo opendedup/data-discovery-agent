@@ -118,6 +118,12 @@ class MCPConfig(BaseModel):
         description="Minimum relevance score for dataset inclusion (0-100)"
     )
     
+    # Discovery Configuration
+    discovery_region: str = Field(
+        default_factory=lambda: os.getenv("GCP_DISCOVERY_REGION", ""),
+        description="Region filter for BigQuery dataset discovery (empty = all regions)"
+    )
+    
     def validate_required_fields(self) -> None:
         """
         Validate that required configuration fields are set.

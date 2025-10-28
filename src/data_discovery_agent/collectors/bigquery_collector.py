@@ -66,6 +66,13 @@ class BigQueryCollector:
         self.target_projects = target_projects or [project_id]
         self.location = os.getenv("BQ_LOCATION", "US")  # BigQuery location for regional INFORMATION_SCHEMA queries
         
+        # NEW: Region filter for discovery
+        self.discovery_region = os.getenv("GCP_DISCOVERY_REGION")
+        if self.discovery_region:
+            logger.info(f"Discovery limited to region: {self.discovery_region}")
+        else:
+            logger.info("No region filter - will discover all datasets")
+        
         # Build exclusion list - always exclude the metadata dataset to avoid circular indexing
         default_excludes = ['_staging', 'temp_', 'tmp_']
         
@@ -216,8 +223,18 @@ class BigQueryCollector:
                     logger.debug(f"Skipping excluded dataset: {dataset_id}")
                     continue
                 
-                # Get dataset labels for filtering
-                dataset_labels = self._get_dataset_labels(project_id, dataset_id)
+                # Get dataset metadata (labels and location)
+                dataset_metadata = self._get_dataset_metadata(project_id, dataset_id)
+                dataset_labels = dataset_metadata["labels"]
+                dataset_location = dataset_metadata["location"]
+                
+                # Skip datasets not in discovery region
+                if self.discovery_region and dataset_location != self.discovery_region:
+                    logger.info(
+                        f"Skipping dataset {dataset_id} - location '{dataset_location}' "
+                        f"does not match discovery region '{self.discovery_region}'"
+                    )
+                    continue
                 
                 # Check if dataset should be filtered by label
                 dataset_filtered = self._should_filter_by_label(dataset_labels)
@@ -232,7 +249,8 @@ class BigQueryCollector:
                         project_id,
                         dataset_id,
                         include_views=include_views,
-                        dataset_labels=dataset_labels
+                        dataset_labels=dataset_labels,
+                        dataset_location=dataset_location
                     )
                     assets.extend(dataset_assets)
                     with self.stats_lock:
@@ -257,6 +275,7 @@ class BigQueryCollector:
         dataset_id: str,
         include_views: bool = True,
         dataset_labels: Optional[Dict[str, str]] = None,
+        dataset_location: str = "UNKNOWN",
     ) -> List[Dict[str, Any]]:
         """
         Scan all tables in a dataset using multi-threading.
@@ -266,6 +285,7 @@ class BigQueryCollector:
             dataset_id: BigQuery dataset ID
             include_views: Whether to include views
             dataset_labels: Labels from the dataset (for hierarchical filtering)
+            dataset_location: The GCP region/location of the dataset
         
         Returns:
             List of BigQuery asset metadata as dictionaries
@@ -346,7 +366,8 @@ class BigQueryCollector:
                         self._collect_table_metadata,
                         project_id,
                         dataset_id,
-                        table_ref.table_id
+                        table_ref.table_id,
+                        dataset_location
                     ): table_ref.table_id
                     for table_ref in tables_to_process
                 }
@@ -390,8 +411,20 @@ class BigQueryCollector:
         project_id: str,
         dataset_id: str,
         table_id: str,
+        dataset_location: str = "UNKNOWN",
     ) -> Optional[Dict[str, Any]]:
-        """Collect comprehensive metadata for a single table"""
+        """
+        Collect comprehensive metadata for a single table.
+        
+        Args:
+            project_id: GCP project ID
+            dataset_id: BigQuery dataset ID
+            table_id: BigQuery table ID
+            dataset_location: The GCP region/location of the dataset
+            
+        Returns:
+            Dictionary containing comprehensive table metadata, or None if collection fails
+        """
         
         try:
             # Get table reference
@@ -569,6 +602,7 @@ class BigQueryCollector:
                 "project_id": project_id,
                 "dataset_id": dataset_id,
                 "table_id": table_id,
+                "dataset_region": dataset_location,
                 "description": table_metadata.get("description", ""),
                 "table_type": table_metadata.get("table_type", "TABLE"),
                 "created": table_metadata.get("created_time"),
@@ -879,24 +913,27 @@ class BigQueryCollector:
         
         return False
     
-    def _get_dataset_labels(self, project_id: str, dataset_id: str) -> Dict[str, str]:
+    def _get_dataset_metadata(self, project_id: str, dataset_id: str) -> Dict[str, Any]:
         """
-        Get labels for a dataset.
+        Get metadata for a dataset including labels and location.
         
         Args:
             project_id: GCP project ID
             dataset_id: BigQuery dataset ID
             
         Returns:
-            Dictionary of labels (empty if dataset not found or has no labels)
+            Dictionary with 'labels' and 'location' keys
         """
         try:
             dataset_ref = f"{project_id}.{dataset_id}"
             dataset = self.client.get_dataset(dataset_ref)
-            return dict(dataset.labels) if dataset.labels else {}
+            return {
+                "labels": dict(dataset.labels) if dataset.labels else {},
+                "location": dataset.location
+            }
         except Exception as e:
-            logger.debug(f"Could not get labels for dataset {dataset_id}: {e}")
-            return {}
+            logger.debug(f"Could not get metadata for dataset {dataset_id}: {e}")
+            return {"labels": {}, "location": "UNKNOWN"}
     
     def _should_filter_by_label(self, labels: Dict[str, str]) -> bool:
         """

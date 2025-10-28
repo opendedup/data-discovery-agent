@@ -81,6 +81,7 @@ class AssetMetadata(BaseModel):
     project_id: str
     dataset_id: Optional[str] = None
     table_id: Optional[str] = None
+    dataset_region: Optional[str] = Field(None, description="Dataset region/location")
     asset_type: str  # "TABLE" or "VIEW" (mapped from table_type)
     
     # Description
