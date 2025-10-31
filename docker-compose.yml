@@ -19,14 +19,12 @@ services:
     env_file:
       - .env
     
-    # Additional environment variables
+    # Override specific variables for containerized deployment
     environment:
-      - LOG_LEVEL=INFO
-      - MCP_SERVER_NAME=data-discovery-agent
-      - MCP_SERVER_VERSION=1.0.0
       - MCP_TRANSPORT=http  # Use HTTP for containerized deployment
       - MCP_HOST=0.0.0.0
       - MCP_PORT=8080
+      - GOOGLE_APPLICATION_CREDENTIALS=/home/mcp/.config/gcloud/application_default_credentials.json
     
     # Port mapping for HTTP transport
     ports:
@@ -37,15 +35,14 @@ services:
       - ./src:/app/src:ro
       - ./config:/app/config:ro
       # Mount GCP credentials for local development
-      # Uncomment if using service account key file
-      # - ~/.config/gcloud:/home/mcp/.config/gcloud:ro
+      - ~/.config/gcloud:/home/mcp/.config/gcloud:ro
     
     # Restart policy
     restart: unless-stopped
     
-    # Health check
+    # Health check against MCP /health endpoint
     healthcheck:
-      test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health').read()"]
       interval: 30s
       timeout: 10s
       retries: 3

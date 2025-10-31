@@ -151,11 +151,13 @@ class VertexSearchClient:
         start_time = time.time()
         
         # Build filters from request
-        # Note: project_id is not supported in Vertex AI Search filters
-        # (the datastore is already scoped to a project)
         filters = {}
+        if request.project_id:
+            filters["project_id"] = request.project_id
         if request.dataset_id:
             filters["dataset_id"] = request.dataset_id
+        if request.table_id:
+            filters["table_id"] = request.table_id
         if request.has_pii is not None:
             filters["has_pii"] = request.has_pii
         if request.has_phi is not None:

@@ -27,7 +27,7 @@ COPY pyproject.toml poetry.lock* ./
 RUN poetry config virtualenvs.create false
 
 # Install dependencies
-RUN poetry install --no-dev --no-interaction --no-ansi
+RUN poetry install --only main --no-interaction --no-ansi
 
 # Stage 2: Runtime
 FROM python:3.11-slim
@@ -70,7 +70,7 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')" || exit 1
 
 # Default command: run MCP server
-CMD ["python", "-m", "data_discovery_agent.mcp.server"]
+CMD ["python", "-m", "data_discovery_agent.mcp"]
 
 # Labels for container metadata
 LABEL maintainer="data-discovery-agent"

@@ -184,9 +184,10 @@ class SearchResultParser:
             full_content = content_obj.get("text")
         
         # Build title
+        project = struct_data.get("project_id", self.project_id)
         dataset = struct_data.get("dataset_id", "")
         table = struct_data.get("table_id", "")
-        title = f"{dataset}.{table}" if dataset and table else doc_id
+        title = f"{project}.{dataset}.{table}" if project and dataset and table else doc_id
         
         # Extract score
         # Note: Vertex AI Search may not return explicit scores

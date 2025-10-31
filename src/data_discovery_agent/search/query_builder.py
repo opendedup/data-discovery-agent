@@ -196,19 +196,19 @@ class SearchQueryBuilder:
         Build Vertex AI Search filter expression from extracted filters.
         
         Filter syntax:
-        - field="value" for exact match
+        - field: ANY("value") for exact match on string fields
         - field>value for numeric comparison
-        - field=true for boolean
+        - field="true" for boolean
         - AND/OR for combining
         """
         
         filter_parts = []
         
-        # String equality filters
+        # String equality filters - use ANY() syntax
         for field in ["project_id", "dataset_id", "table_id", "environment"]:
             if field in filters:
                 value = filters[field]
-                filter_parts.append(f'{field}="{value}"')
+                filter_parts.append(f'{field}: ANY("{value}")')
         
         # Boolean filters
         # Vertex AI Search expects: field="true" or field="false" (as strings with quotes)

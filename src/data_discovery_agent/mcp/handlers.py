@@ -96,7 +96,7 @@ class MCPHandlers:
             search_response = self.vertex_client.search(search_request)
             
             # Format response based on output_format
-            output_format = arguments.get("output_format", "markdown")
+            output_format = arguments.get("output_format", "json")
             include_full_content = arguments.get("include_full_content", True)
             
             if output_format == "json":
@@ -252,10 +252,27 @@ class MCPHandlers:
             include_lineage = arguments.get("include_lineage", True)
             if include_lineage and asset.lineage:
                 response += "\n## Lineage\n\n"
-                upstream = asset.lineage.get("upstream", [])
-                downstream = asset.lineage.get("downstream", [])
+                # asset.lineage is a list of dicts with 'source' and 'target' keys
+                # Get the full qualified name for this asset
+                asset_fqn = f"{asset.project_id}.{asset.dataset_id}.{asset.table_id}"
+                
+                # Filter upstream (sources) and downstream (targets)
+                upstream = [rel for rel in asset.lineage if rel.get("target") == asset_fqn]
+                downstream = [rel for rel in asset.lineage if rel.get("source") == asset_fqn]
+                
                 response += f"- **Upstream Sources**: {len(upstream)}\n"
+                if upstream:
+                    for rel in upstream[:5]:  # Show first 5
+                        response += f"  - {rel.get('source', 'unknown')}\n"
+                    if len(upstream) > 5:
+                        response += f"  - ... and {len(upstream) - 5} more\n"
+                
                 response += f"- **Downstream Targets**: {len(downstream)}\n"
+                if downstream:
+                    for rel in downstream[:5]:  # Show first 5
+                        response += f"  - {rel.get('target', 'unknown')}\n"
+                    if len(downstream) > 5:
+                        response += f"  - ... and {len(downstream) - 5} more\n"
             
             # Add usage if requested
             include_usage = arguments.get("include_usage", True)

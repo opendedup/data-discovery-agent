@@ -27,6 +27,7 @@ class SearchRequest(BaseModel):
     # Filtering
     project_id: Optional[str] = Field(None, description="Filter by project")
     dataset_id: Optional[str] = Field(None, description="Filter by dataset")
+    table_id: Optional[str] = Field(None, description="Filter by table")
     has_pii: Optional[bool] = Field(None, description="Filter by PII presence")
     has_phi: Optional[bool] = Field(None, description="Filter by PHI presence")
     environment: Optional[str] = Field(None, description="Filter by environment (prod/staging/dev)")

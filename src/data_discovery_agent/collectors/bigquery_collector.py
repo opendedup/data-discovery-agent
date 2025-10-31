@@ -441,7 +441,7 @@ class BigQueryCollector:
                 "table_id": table_id,
                 "table_type": table.table_type,
                 "description": table.description or "",
-                "num_rows": table.num_rows,
+                "num_rows": table.num_rows if table.table_type == "TABLE" else -1,  # Use -1 for views (row count N/A)
                 "num_bytes": table.num_bytes,
                 "column_count": len(table.schema) if table.schema else 0,
                 "created_time": table.created.isoformat() if table.created else None,
@@ -608,7 +608,7 @@ class BigQueryCollector:
                 "created": table_metadata.get("created_time"),
                 "last_modified": table_metadata.get("modified_time"),
                 "last_accessed": None,  # Not available in basic metadata
-                "row_count": table_metadata.get("num_rows"),
+                "row_count": table_metadata.get("num_rows") if table.table_type == "TABLE" else -1,  # -1 for views
                 "column_count": table_metadata.get("column_count", 0),
                 "size_bytes": table_metadata.get("num_bytes"),
                 
